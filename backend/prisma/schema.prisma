@@ -1,0 +1,60 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum JobType {
+  FORM_FILLER
+  WEB_SCRAPER
+  CUSTOM_AGENT
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum LogLevel {
+  INFO
+  WARN
+  ERROR
+  SUCCESS
+}
+
+model Job {
+  id         String     @id @default(uuid())
+  title      String
+  type       JobType    @default(FORM_FILLER)
+  status     JobStatus  @default(PENDING)
+  targetUrl  String
+  payload    Json?      // Stores target form fields, user data, instructions
+  result     Json?      // Stores agent output, submitted confirmation, screenshot urls
+  error      String?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+  logs       JobLog[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model JobLog {
+  id        String   @id @default(uuid())
+  jobId     String
+  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  step      String
+  message   String
+  level     LogLevel @default(INFO)
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([jobId])
+  @@index([createdAt])
+}
