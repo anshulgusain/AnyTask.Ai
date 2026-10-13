@@ -1,0 +1,16 @@
+{
+  "name": "anytask-ai-workspace",
+  "version": "1.0.0",
+  "description": "AnyTask AI - Full-stack Autonomous Browser Agent Workspace",
+  "scripts": {
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build:backend": "cd backend && npm run build",
+    "build:frontend": "cd frontend && npm run build",
+    "prisma:generate": "cd backend && npm run prisma:generate",
+    "prisma:migrate": "cd backend && npm run prisma:migrate"
+  },
+  "keywords": ["ai", "agents", "express", "nextjs", "browser-automation"],
+  "author": "",
+  "license": "ISC"
+}
