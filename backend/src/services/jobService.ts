@@ -1,5 +1,6 @@
 import { getPrismaClient, isDbConnected } from '../db.js';
 import { JobItem, JobLogItem, JobPayload, JobStatus, LogLevel } from '../types/job.js';
+import { runBrowserAgent } from '../ai/browserAgent.js';
 import crypto from 'node:crypto';
 
 // In-memory fallback repository when PostgreSQL is not yet configured locally
@@ -301,99 +302,18 @@ export class JobService {
    * Step-by-step pipeline execution
    */
   private static async runPipeline(job: JobItem): Promise<void> {
-    const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
     try {
-      // Step 1: Initialize Agent Context & Browser Session
-      await delay(600);
-      await this.addLog(
-        job.id,
-        'SETUP_ENV',
-        'Initializing headless browser runtime and configuring OpenAI Agent SDK tools...',
-        'INFO'
-      );
-
-      // Step 2: Navigate to URL
-      await delay(900);
-      await this.addLog(
-        job.id,
-        'BROWSER_NAVIGATE',
-        `Navigating browser to target URL: ${job.targetUrl}`,
-        'INFO',
-        { url: job.targetUrl }
-      );
-
-      // Step 3: Page Analysis & DOM Inspection
-      await delay(1100);
-      const detectedFields = job.payload?.fields
-        ? Object.keys(job.payload.fields)
-        : ['name', 'email', 'phone', 'message'];
-
-      await this.addLog(
-        job.id,
-        'DOM_INSPECTION',
-        `Inspected DOM. Identified ${detectedFields.length} target form input elements on the page.`,
-        'INFO',
-        { detectedFields }
-      );
-
-      // Step 4: OpenAI Agent SDK Form Mapping & Reasoning
-      await delay(1200);
-      const instructionText = job.payload?.instructions || 'Auto-fill all identified inputs with provided user credentials';
-      await this.addLog(
-        job.id,
-        'AGENT_REASONING',
-        `OpenAI Agent reasoning step: Contextualizing form fields against instruction: "${instructionText}"`,
-        'INFO'
-      );
-
-      // Step 5: Form Field Population
-      await delay(1000);
-      const fieldsToFill = job.payload?.fields || {
-        fullName: 'Jane Doe',
-        email: 'jane.doe@example.com',
-        subject: 'Inquiry regarding services',
-        comments: 'Automated test submission via AnyTask AI',
+      const logger = async (
+        step: string,
+        message: string,
+        level: LogLevel = 'INFO',
+        metadata?: Record<string, any>
+      ) => {
+        await this.addLog(job.id, step, message, level, metadata);
       };
 
-      for (const [key, val] of Object.entries(fieldsToFill)) {
-        await delay(400);
-        await this.addLog(
-          job.id,
-          'INPUT_FILL',
-          `Agent filled input field [${key}] with provided value.`,
-          'INFO',
-          { field: key, length: String(val).length }
-        );
-      }
-
-      // Step 6: Form Submission & Verification
-      await delay(800);
-      await this.addLog(
-        job.id,
-        'FORM_SUBMIT',
-        'Triggering form submit button and waiting for network response / DOM mutations...',
-        'INFO'
-      );
-
-      // Step 7: Final verification & Snapshot
-      await delay(700);
-      const resultData = {
-        success: true,
-        submittedAt: new Date().toISOString(),
-        url: job.targetUrl,
-        filledFields: Object.keys(fieldsToFill),
-        summary: `Successfully filled and submitted form on ${job.targetUrl}`,
-        confidenceScore: 0.98,
-      };
-
-      await this.addLog(
-        job.id,
-        'COMPLETE',
-        'Agent task completed successfully. Form submitted without validation errors.',
-        'SUCCESS',
-        resultData
-      );
+      // Delegate directly to the AI agent implementation in backend/src/ai/browserAgent.ts
+      const resultData = await runBrowserAgent(job, logger);
 
       await this.updateStatus(job.id, 'COMPLETED', resultData);
     } catch (err: any) {
