@@ -1,5 +1,6 @@
 import { JobItem, LogLevel } from '../types/job.js';
 import { BROWSER_AGENT_SYSTEM_PROMPT } from './prompts.js';
+import { chromium } from 'playwright';
 import * as tools from './tools.js';
 
 export type LogCallback = (
@@ -45,9 +46,9 @@ export async function runBrowserAgent(
   // -------------------------------------------------------------------------
   // 🚀 STEP 1: Launch your browser instance (e.g. Playwright)
   // -------------------------------------------------------------------------
-  // const browser = await chromium.launch({ headless: false });
-  // const page = await browser.newPage();
-  // await page.goto(job.targetUrl);
+  const browser = await chromium.launch({ headless: false });
+  const page = await browser.newPage();
+  await page.goto(job.targetUrl);
   await log('NAVIGATE', `Browser navigating to: ${job.targetUrl}`, 'INFO', { url: job.targetUrl });
 
   // -------------------------------------------------------------------------

@@ -10,34 +10,34 @@ interface FieldPair {
 
 const PRESETS = [
   {
-    name: 'Contact Us Form',
-    url: 'https://example-domain.com/contact-us',
-    instructions: 'Locate the contact form, populate fields, and submit inquiry message.',
+    name: 'Local Demo Form (Guaranteed)',
+    url: 'http://localhost:3000/demo-form',
+    instructions: 'Locate the contact form, populate fields, and click Submit.',
     fields: [
       { key: 'fullName', value: 'Jane Doe' },
       { key: 'email', value: 'jane.doe@example.com' },
-      { key: 'subject', value: 'Enterprise Solution Inquiry' },
-      { key: 'message', value: 'Hello, looking forward to testing automated agents.' },
+      { key: 'subject', value: 'Testing Autonomous Browser Agent' },
+      { key: 'message', value: 'Hello! This was auto-filled by Playwright.' },
     ],
   },
   {
-    name: 'Newsletter Subscription',
-    url: 'https://newsletter-hub.org/subscribe',
-    instructions: 'Find email input, accept terms checkbox, and click Subscribe.',
+    name: 'HTTPBin Public Test Form',
+    url: 'https://httpbin.org/forms/post',
+    instructions: 'Fill customer name and comments on httpbin test form.',
     fields: [
-      { key: 'subscriberEmail', value: 'developer@anytask.ai' },
-      { key: 'preferences', value: 'Daily Tech Updates' },
+      { key: 'custname', value: 'Alex Chen' },
+      { key: 'custtel', value: '555-0199' },
+      { key: 'custemail', value: 'alex.chen@example.com' },
+      { key: 'comments', value: 'Automated test post from AnyTask.AI' },
     ],
   },
   {
-    name: 'Job Application Form',
-    url: 'https://careers-portal.net/apply/frontend-engineer',
-    instructions: 'Fill applicant profile, portfolio link, and cover letter notes.',
+    name: 'HTML Form Playground',
+    url: 'https://testpages.eviltester.com/styled/basic-html-form-test.html',
+    instructions: 'Fill username and comments inputs.',
     fields: [
-      { key: 'candidateName', value: 'Alex Chen' },
-      { key: 'email', value: 'alex.chen@ai-dev.io' },
-      { key: 'portfolioUrl', value: 'https://github.com/developer-profile' },
-      { key: 'coverLetter', value: 'Experienced in Next.js, Express, and OpenAI Agents.' },
+      { key: 'username', value: 'agent_user' },
+      { key: 'comments', value: 'Testing basic HTML form inputs.' },
     ],
   },
 ];
@@ -52,12 +52,13 @@ export default function HomePage() {
 
   // Form inputs
   const [jobTitle, setJobTitle] = useState('Auto-fill Contact Form');
-  const [targetUrl, setTargetUrl] = useState('https://example-domain.com/contact-us');
-  const [instructions, setInstructions] = useState('Analyze form fields and submit automatically.');
+  const [targetUrl, setTargetUrl] = useState('http://localhost:3000/demo-form');
+  const [instructions, setInstructions] = useState('Locate the contact form, populate fields, and click Submit.');
   const [fields, setFields] = useState<FieldPair[]>([
     { key: 'fullName', value: 'Jane Doe' },
     { key: 'email', value: 'jane.doe@example.com' },
-    { key: 'message', value: 'Exploring automated web form submission with AI agents.' },
+    { key: 'subject', value: 'Testing Autonomous Browser Agent' },
+    { key: 'message', value: 'Hello! Auto-filled by Playwright.' },
   ]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
