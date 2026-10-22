@@ -10,7 +10,10 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "test:tools": "tsx src/ai/testTools.ts",
-    "test:discovery": "tsx src/ai/testDiscovery.ts"
+    "test:discovery": "tsx src/ai/testDiscovery.ts",
+    "test:planner": "tsx src/ai/testPlanner.ts",
+    "test:hitl": "tsx src/ai/testHitlGate.ts",
+    "test:executor": "tsx src/ai/testExecutor.ts"
   },
   "keywords": [
     "ai",
@@ -26,6 +29,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
+    "openai": "^7.39.0",
     "playwright": "^1.64.0",
     "zod": "^3.23.8"
   },

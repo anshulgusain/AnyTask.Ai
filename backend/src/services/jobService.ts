@@ -273,6 +273,80 @@ export class JobService {
   }
 
   /**
+   * HITL Gate 1: Save generated TestPlan and transition job to AWAITING_PLAN_APPROVAL
+   */
+  static async setPlanAwaitingApproval(
+    jobId: string,
+    plan: import('../ai/journeyPlanner.js').TestPlan
+  ): Promise<JobItem> {
+    const job = await this.getJobById(jobId);
+    if (!job) throw new Error(`Job not found: ${jobId}`);
+
+    job.plan = plan;
+    job.status = 'AWAITING_PLAN_APPROVAL';
+    job.updatedAt = new Date().toISOString();
+    memoryJobs.set(jobId, job);
+
+    await this.addLog(
+      jobId,
+      'HITL_GATE_1',
+      `TestPlan generated with ${plan.journeys.length} journeys. Execution PAUSED awaiting human approval.`,
+      'WARN',
+      { planId: plan.id, summary: plan.summary }
+    );
+
+    return job;
+  }
+
+  /**
+   * Human-In-The-Loop Gate 1: Approve or Reject the TestPlan
+   */
+  static async approvePlan(
+    jobId: string,
+    approved: boolean,
+    notes?: string,
+    modifiedPlan?: import('../ai/journeyPlanner.js').TestPlan
+  ): Promise<JobItem> {
+    const job = await this.getJobById(jobId);
+    if (!job) throw new Error(`Job not found: ${jobId}`);
+
+    if (job.status !== 'AWAITING_PLAN_APPROVAL') {
+      throw new Error(`Job ${jobId} is not awaiting plan approval (current status: ${job.status})`);
+    }
+
+    job.planApproved = approved;
+    job.planApprovalNotes = notes;
+    if (modifiedPlan) {
+      job.plan = modifiedPlan;
+    }
+
+    if (approved) {
+      job.status = 'RUNNING';
+      await this.addLog(
+        jobId,
+        'HITL_PLAN_APPROVED',
+        `TestPlan approved by engineer. Proceeding to execution.${notes ? ` Notes: ${notes}` : ''}`,
+        'SUCCESS',
+        { approvedBy: 'engineer', notes }
+      );
+    } else {
+      job.status = 'CANCELLED';
+      await this.addLog(
+        jobId,
+        'HITL_PLAN_REJECTED',
+        `TestPlan rejected by engineer.${notes ? ` Reason: ${notes}` : ''}`,
+        'WARN',
+        { notes }
+      );
+    }
+
+    job.updatedAt = new Date().toISOString();
+    memoryJobs.set(jobId, job);
+    return job;
+  }
+
+
+  /**
    * Run the job execution pipeline
    * Modular architecture ready for OpenAI Agent SDK and browser automation (Playwright/Puppeteer)
    */

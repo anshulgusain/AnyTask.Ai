@@ -1,6 +1,17 @@
-export type JobStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+import type { TestPlan } from '../ai/journeyPlanner.js';
 
-export type JobType = 'FORM_FILLER' | 'WEB_SCRAPER' | 'CUSTOM_AGENT';
+export type JobStatus =
+  | 'PENDING'
+  | 'DISCOVERING'
+  | 'PLANNING'
+  | 'AWAITING_PLAN_APPROVAL'
+  | 'RUNNING'
+  | 'AWAITING_ACTION_APPROVAL'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export type JobType = 'FORM_FILLER' | 'WEB_SCRAPER' | 'CUSTOM_AGENT' | 'AUTONOMOUS_QA';
 
 export type LogLevel = 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS';
 
@@ -16,6 +27,7 @@ export interface JobPayload {
   fields?: Record<string, string> | FormFieldItem[];
   submitSelector?: string;
   headless?: boolean;
+  userIntent?: string;
 }
 
 export interface JobLogItem {
@@ -35,9 +47,13 @@ export interface JobItem {
   status: JobStatus;
   targetUrl: string;
   payload?: JobPayload;
+  plan?: TestPlan;
+  planApproved?: boolean;
+  planApprovalNotes?: string;
   result?: Record<string, any>;
   error?: string | null;
   createdAt: string;
   updatedAt: string;
   logs?: JobLogItem[];
 }
+

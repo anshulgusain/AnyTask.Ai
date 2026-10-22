@@ -159,4 +159,78 @@ export class JobController {
       });
     }
   }
+
+  /**
+   * GET /api/jobs/:id/plan (HITL Gate 1)
+   */
+  static async getPlan(req: Request, res: Response) {
+    try {
+      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      if (!id) return res.status(400).json({ success: false, error: 'Job ID required' });
+
+      const job = await JobService.getJobById(id);
+      if (!job) return res.status(404).json({ success: false, error: `Job with ID ${id} not found` });
+
+      return res.json({
+        success: true,
+        data: {
+          jobId: id,
+          status: job.status,
+          plan: job.plan || null,
+          planApproved: job.planApproved ?? null,
+          planApprovalNotes: job.planApprovalNotes || null,
+        },
+      });
+    } catch (error: any) {
+      console.error('Error in getPlan:', error);
+      return res.status(500).json({ success: false, error: error.message || 'Failed to get plan' });
+    }
+  }
+
+  /**
+   * POST /api/jobs/:id/approve-plan (HITL Gate 1)
+   */
+  static async approvePlan(req: Request, res: Response) {
+    try {
+      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      if (!id) return res.status(400).json({ success: false, error: 'Job ID required' });
+
+      const ApprovePlanSchema = z.object({
+        approved: z.boolean(),
+        notes: z.string().optional(),
+        modifiedPlan: z.any().optional(),
+      });
+
+      const parsed = ApprovePlanSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation failed',
+          details: parsed.error.format(),
+        });
+      }
+
+      const updatedJob = await JobService.approvePlan(
+        id,
+        parsed.data.approved,
+        parsed.data.notes,
+        parsed.data.modifiedPlan
+      );
+
+      return res.json({
+        success: true,
+        message: parsed.data.approved
+          ? 'Plan approved. Ready for execution.'
+          : 'Plan rejected. Job cancelled.',
+        data: updatedJob,
+      });
+    } catch (error: any) {
+      console.error('Error in approvePlan:', error);
+      return res.status(400).json({
+        success: false,
+        error: error.message || 'Failed to process plan approval',
+      });
+    }
+  }
 }
+
