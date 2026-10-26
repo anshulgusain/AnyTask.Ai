@@ -26,6 +26,8 @@ export const TestStepSchema = z.object({
   selector: z.string().optional(),
   value: z.string().optional(),
   expectedOutcome: z.string().optional(),
+  isDestructive: z.boolean().optional(),
+  riskLevel: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).optional(),
 });
 
 export const TestJourneySchema = z.object({
@@ -289,6 +291,8 @@ export function generateDeterministicPlan(
       action: 'CLICK',
       selector: submitAction.selector,
       expectedOutcome: 'Form submitted and transaction initiated',
+      isDestructive: true,
+      riskLevel: 'HIGH',
     });
   }
 

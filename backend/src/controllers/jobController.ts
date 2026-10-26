@@ -232,5 +232,69 @@ export class JobController {
       });
     }
   }
+
+  /**
+   * GET /api/jobs/:id/pending-action (HITL Gate 2)
+   */
+  static async getPendingAction(req: Request, res: Response) {
+    try {
+      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      if (!id) return res.status(400).json({ success: false, error: 'Job ID required' });
+
+      const pending = await JobService.getPendingAction(id);
+      return res.json({
+        success: true,
+        data: pending,
+      });
+    } catch (error: any) {
+      console.error('Error in getPendingAction:', error);
+      return res.status(500).json({ success: false, error: error.message || 'Failed to get pending action' });
+    }
+  }
+
+  /**
+   * POST /api/jobs/:id/approve-action (HITL Gate 2)
+   */
+  static async approveAction(req: Request, res: Response) {
+    try {
+      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      if (!id) return res.status(400).json({ success: false, error: 'Job ID required' });
+
+      const ApproveActionSchema = z.object({
+        approved: z.boolean(),
+        notes: z.string().optional(),
+      });
+
+      const parsed = ApproveActionSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation failed',
+          details: parsed.error.format(),
+        });
+      }
+
+      const updatedJob = await JobService.approveAction(
+        id,
+        parsed.data.approved,
+        parsed.data.notes
+      );
+
+      return res.json({
+        success: true,
+        message: parsed.data.approved
+          ? 'Destructive action approved. Execution proceeding.'
+          : 'Destructive action rejected. Step will be skipped.',
+        data: updatedJob,
+      });
+    } catch (error: any) {
+      console.error('Error in approveAction:', error);
+      return res.status(400).json({
+        success: false,
+        error: error.message || 'Failed to process action approval',
+      });
+    }
+  }
 }
+
 

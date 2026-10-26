@@ -40,6 +40,26 @@ export interface JobLogItem {
   createdAt: string;
 }
 
+export interface PendingActionApproval {
+  stepNumber: number;
+  journeyId: string;
+  action: string;
+  selector?: string;
+  value?: string;
+  description: string;
+  reason: string;
+  screenshotPath?: string;
+  timestamp: string;
+}
+
+export interface ActionApprovalRecord {
+  stepNumber: number;
+  journeyId: string;
+  approved: boolean;
+  notes?: string;
+  timestamp: string;
+}
+
 export interface JobItem {
   id: string;
   title: string;
@@ -50,6 +70,8 @@ export interface JobItem {
   plan?: TestPlan;
   planApproved?: boolean;
   planApprovalNotes?: string;
+  pendingAction?: PendingActionApproval;
+  actionApprovalHistory?: ActionApprovalRecord[];
   result?: Record<string, any>;
   error?: string | null;
   createdAt: string;

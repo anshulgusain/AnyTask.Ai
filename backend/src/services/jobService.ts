@@ -7,6 +7,13 @@ import crypto from 'node:crypto';
 const memoryJobs = new Map<string, JobItem>();
 const memoryLogs = new Map<string, JobLogItem[]>();
 
+interface ActionResolver {
+  resolve: (res: { approved: boolean; notes?: string }) => void;
+  reject: (err: any) => void;
+  timeoutId: NodeJS.Timeout;
+}
+const pendingActionResolvers = new Map<string, ActionResolver>();
+
 export class JobService {
   /**
    * Create a new job
@@ -270,6 +277,15 @@ export class JobService {
       if (error) job.error = error;
       memoryJobs.set(id, job);
     }
+
+    if (status === 'CANCELLED' || status === 'FAILED') {
+      const resolver = pendingActionResolvers.get(id);
+      if (resolver) {
+        clearTimeout(resolver.timeoutId);
+        pendingActionResolvers.delete(id);
+        resolver.resolve({ approved: false, notes: `Job execution stopped: status transitioned to ${status}` });
+      }
+    }
   }
 
   /**
@@ -343,6 +359,130 @@ export class JobService {
     job.updatedAt = new Date().toISOString();
     memoryJobs.set(jobId, job);
     return job;
+  }
+
+  /**
+   * Human-In-The-Loop Gate 2: Pause job and set awaiting action approval
+   */
+  static async setActionAwaitingApproval(
+    jobId: string,
+    action: import('../types/job.js').PendingActionApproval
+  ): Promise<JobItem> {
+    const job = await this.getJobById(jobId);
+    if (!job) throw new Error(`Job not found: ${jobId}`);
+
+    job.status = 'AWAITING_ACTION_APPROVAL';
+    job.pendingAction = action;
+    job.updatedAt = new Date().toISOString();
+
+    await this.addLog(
+      jobId,
+      'HITL_GATE2_INTERCEPT',
+      `Execution paused at HITL Gate 2: Step ${action.stepNumber} [${action.action}] requires human approval. Reason: ${action.reason}`,
+      'WARN',
+      { pendingAction: action }
+    );
+
+    memoryJobs.set(jobId, job);
+    return job;
+  }
+
+  /**
+   * Human-In-The-Loop Gate 2: Approve or Reject a destructive action
+   */
+  static async approveAction(
+    jobId: string,
+    approved: boolean,
+    notes?: string
+  ): Promise<JobItem> {
+    const job = await this.getJobById(jobId);
+    if (!job) throw new Error(`Job not found: ${jobId}`);
+
+    if (job.status !== 'AWAITING_ACTION_APPROVAL') {
+      throw new Error(`Job ${jobId} is not awaiting action approval (current status: ${job.status})`);
+    }
+
+    if (!job.actionApprovalHistory) {
+      job.actionApprovalHistory = [];
+    }
+
+    const currentPending = job.pendingAction;
+    if (currentPending) {
+      job.actionApprovalHistory.push({
+        stepNumber: currentPending.stepNumber,
+        journeyId: currentPending.journeyId,
+        approved,
+        notes,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    const stepLabel = currentPending
+      ? `Step ${currentPending.stepNumber} [${currentPending.action}]`
+      : 'Destructive action';
+
+    job.pendingAction = undefined;
+    job.status = 'RUNNING';
+    job.updatedAt = new Date().toISOString();
+
+    if (approved) {
+      await this.addLog(
+        jobId,
+        'HITL_GATE2_APPROVED',
+        `Engineer APPROVED ${stepLabel}. Execution resuming.${notes ? ` Notes: ${notes}` : ''}`,
+        'SUCCESS',
+        { approvedBy: 'engineer', notes }
+      );
+    } else {
+      await this.addLog(
+        jobId,
+        'HITL_GATE2_REJECTED',
+        `Engineer REJECTED ${stepLabel}. Action will be skipped.${notes ? ` Reason: ${notes}` : ''}`,
+        'WARN',
+        { rejectedBy: 'engineer', notes }
+      );
+    }
+
+    memoryJobs.set(jobId, job);
+
+    // Resolve in-flight promise if waiting
+    const resolver = pendingActionResolvers.get(jobId);
+    if (resolver) {
+      clearTimeout(resolver.timeoutId);
+      pendingActionResolvers.delete(jobId);
+      resolver.resolve({ approved, notes });
+    }
+
+    return job;
+  }
+
+  /**
+   * Get pending action approval request for a job
+   */
+  static async getPendingAction(jobId: string): Promise<import('../types/job.js').PendingActionApproval | null> {
+    const job = await this.getJobById(jobId);
+    if (!job) throw new Error(`Job not found: ${jobId}`);
+    return job.pendingAction || null;
+  }
+
+  /**
+   * Register a resolver for a job awaiting Gate 2 human approval
+   */
+  static waitForActionApproval(
+    jobId: string,
+    timeoutMs: number = 300000
+  ): Promise<{ approved: boolean; notes?: string }> {
+    return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        pendingActionResolvers.delete(jobId);
+        resolve({
+          approved: false,
+          notes: 'Timed out waiting for human engineer approval (auto-rejected for safety).',
+        });
+      }, timeoutMs);
+
+      pendingActionResolvers.set(jobId, { resolve, reject, timeoutId });
+    });
   }
 
 

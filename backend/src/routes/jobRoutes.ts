@@ -13,3 +13,8 @@ jobRoutes.post('/:id/cancel', JobController.cancelJob);
 jobRoutes.get('/:id/plan', JobController.getPlan);
 jobRoutes.post('/:id/approve-plan', JobController.approvePlan);
 
+// HITL Gate 2: Human-in-the-loop destructive action review & approval
+jobRoutes.get('/:id/pending-action', JobController.getPendingAction);
+jobRoutes.post('/:id/approve-action', JobController.approveAction);
+
+

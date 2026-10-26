@@ -13,7 +13,8 @@
     "test:discovery": "tsx src/ai/testDiscovery.ts",
     "test:planner": "tsx src/ai/testPlanner.ts",
     "test:hitl": "tsx src/ai/testHitlGate.ts",
-    "test:executor": "tsx src/ai/testExecutor.ts"
+    "test:executor": "tsx src/ai/testExecutor.ts",
+    "test:gate2": "tsx src/ai/testHitlGate2.ts"
   },
   "keywords": [
     "ai",
