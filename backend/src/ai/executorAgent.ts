@@ -12,6 +12,10 @@ import {
 } from './tools.js';
 import type { TestPlan, TestJourney, TestStep, TestStepAction } from './journeyPlanner.js';
 import type { LogCallback } from './browserAgent.js';
+import {
+  evaluateStepAssertions,
+  StepAssertionReport,
+} from './assertionAgent.js';
 
 // ---------------------------------------------------------------------------
 // Execution Result Types
@@ -25,6 +29,7 @@ export interface StepExecutionResult {
   message: string;
   durationMs: number;
   screenshotPath?: string;
+  assertionReport?: StepAssertionReport;
   timestamp: string;
 }
 
@@ -35,6 +40,9 @@ export interface JourneyExecutionResult {
   totalSteps: number;
   passedSteps: number;
   failedSteps: number;
+  totalAssertions: number;
+  passedAssertions: number;
+  failedAssertions: number;
   durationMs: number;
   steps: StepExecutionResult[];
 }
@@ -45,6 +53,9 @@ export interface ExecutionSummary {
   totalJourneys: number;
   passedJourneys: number;
   failedJourneys: number;
+  totalAssertions: number;
+  passedAssertions: number;
+  failedAssertions: number;
   totalDurationMs: number;
   executedAt: string;
   results: JourneyExecutionResult[];
@@ -101,7 +112,16 @@ export function isDestructiveAction(step: TestStep): DestructiveCheckResult {
   }
 
   // Pure navigation or read-only assertions are non-destructive by default
-  if (step.action === 'NAVIGATE' || step.action === 'ASSERT_TEXT' || step.action === 'ASSERT_VISIBLE') {
+  if (
+    step.action === 'NAVIGATE' ||
+    step.action === 'ASSERT_TEXT' ||
+    step.action === 'ASSERT_VISIBLE' ||
+    step.action === 'ASSERT_HIDDEN' ||
+    step.action === 'ASSERT_URL' ||
+    step.action === 'ASSERT_COUNT' ||
+    step.action === 'ASSERT_VALUE' ||
+    step.action === 'ASSERT_SEMANTIC'
+  ) {
     return {
       isDestructive: false,
       riskLevel: 'LOW',
@@ -292,6 +312,8 @@ export async function runExecutorAgent(
           );
         }
 
+        let stepAssertionReport: StepAssertionReport | undefined = undefined;
+
         if (!actionApproved) {
           actionSuccess = false;
           actionMessage = `Skipped by engineer at HITL Gate 2: ${approvalNotes || 'Destructive action rejected'}`;
@@ -328,36 +350,49 @@ export async function runExecutorAgent(
               actionMessage = res.message;
               break;
             }
-            case 'ASSERT_TEXT': {
-              if (!step.selector) throw new Error('Missing selector for ASSERT_TEXT action');
-              const res = await getTextContent(page, step.selector);
-              if (res.success && step.value) {
-                const matches = res.text?.includes(step.value);
-                actionSuccess = Boolean(matches);
-                actionMessage = matches
-                  ? `Text matches expected substring: "${step.value}"`
-                  : `Text mismatch. Got: "${res.text}", expected: "${step.value}"`;
-              } else {
-                actionSuccess = res.success;
-                actionMessage = res.message;
-              }
-              break;
-            }
-            case 'ASSERT_VISIBLE': {
-              if (!step.selector) throw new Error('Missing selector for ASSERT_VISIBLE action');
-              const res = await waitForElement(page, step.selector, 'visible', 5000);
-              actionSuccess = res.success;
-              actionMessage = res.message;
+            case 'ASSERT_TEXT':
+            case 'ASSERT_VISIBLE':
+            case 'ASSERT_HIDDEN':
+            case 'ASSERT_URL':
+            case 'ASSERT_COUNT':
+            case 'ASSERT_VALUE':
+            case 'ASSERT_SEMANTIC': {
+              const report = await evaluateStepAssertions(page, step, emitLog);
+              stepAssertionReport = report;
+              actionSuccess = report.passed;
+              actionMessage =
+                report.outcomes.map((o) => o.message).join('; ') ||
+                (report.passed ? 'Assertion passed' : 'Assertion failed');
               break;
             }
             default:
               throw new Error(`Unsupported action type: ${(step as any).action}`);
+            }
+
+            // Post-action verification: If action step has expectedOutcome or explicit assertions
+            if (
+              actionSuccess &&
+              !step.action.startsWith('ASSERT_') &&
+              ((step as any).assertions || step.expectedOutcome)
+            ) {
+              const report = await evaluateStepAssertions(page, step, emitLog);
+              stepAssertionReport = report;
+              if (!report.passed) {
+                actionSuccess = false;
+                const failureDetails = report.outcomes
+                  .filter((o) => o.status === 'FAIL')
+                  .map((o) => o.message)
+                  .join('; ');
+                actionMessage = `${actionMessage} - Post-action assertion FAILED: ${failureDetails}`;
+              } else if (report.outcomes.length > 0) {
+                actionMessage = `${actionMessage} - Post-action assertions verified (${report.passedCount}/${report.total} PASS)`;
+              }
+            }
+          } catch (err: any) {
+            actionSuccess = false;
+            actionMessage = `Execution error: ${err.message}`;
           }
-        } catch (err: any) {
-          actionSuccess = false;
-          actionMessage = `Execution error: ${err.message}`;
         }
-      }
 
         const durationMs = Date.now() - stepStart;
 
@@ -374,6 +409,7 @@ export async function runExecutorAgent(
           message: actionMessage,
           durationMs,
           screenshotPath: screenshotRes.success ? screenshotRes.path : undefined,
+          assertionReport: stepAssertionReport,
           timestamp: new Date().toISOString(),
         };
 
@@ -410,6 +446,19 @@ export async function runExecutorAgent(
       const passedSteps = stepResults.filter((s) => s.success).length;
       const failedSteps = stepResults.filter((s) => !s.success).length;
 
+      const totalAssertions = stepResults.reduce(
+        (sum, s) => sum + (s.assertionReport?.total || 0),
+        0
+      );
+      const passedAssertions = stepResults.reduce(
+        (sum, s) => sum + (s.assertionReport?.passedCount || 0),
+        0
+      );
+      const failedAssertions = stepResults.reduce(
+        (sum, s) => sum + (s.assertionReport?.failedCount || 0),
+        0
+      );
+
       journeyResults.push({
         journeyId: journey.id,
         title: journey.title,
@@ -417,13 +466,16 @@ export async function runExecutorAgent(
         totalSteps: stepResults.length,
         passedSteps,
         failedSteps,
+        totalAssertions,
+        passedAssertions,
+        failedAssertions,
         durationMs: journeyDuration,
         steps: stepResults,
       });
 
       await emitLog(
         journeySuccess ? 'JOURNEY_PASS' : 'JOURNEY_FAIL',
-        `Journey "${journey.title}" finished: ${passedSteps}/${stepResults.length} steps passed (${journeyDuration}ms).`,
+        `Journey "${journey.title}" finished: ${passedSteps}/${stepResults.length} steps passed (${journeyDuration}ms, ${passedAssertions}/${totalAssertions} assertions passed).`,
         journeySuccess ? 'SUCCESS' : 'WARN'
       );
     }
@@ -437,12 +489,19 @@ export async function runExecutorAgent(
   const passedJourneys = journeyResults.filter((j) => j.success).length;
   const failedJourneys = journeyResults.filter((j) => !j.success).length;
 
+  const totalAssertions = journeyResults.reduce((sum, j) => sum + j.totalAssertions, 0);
+  const passedAssertions = journeyResults.reduce((sum, j) => sum + j.passedAssertions, 0);
+  const failedAssertions = journeyResults.reduce((sum, j) => sum + j.failedAssertions, 0);
+
   const summary: ExecutionSummary = {
     planId: plan.id,
     targetBaseUrl: plan.targetBaseUrl,
     totalJourneys: journeyResults.length,
     passedJourneys,
     failedJourneys,
+    totalAssertions,
+    passedAssertions,
+    failedAssertions,
     totalDurationMs,
     executedAt: new Date().toISOString(),
     results: journeyResults,
@@ -450,9 +509,9 @@ export async function runExecutorAgent(
 
   await emitLog(
     'EXECUTION_COMPLETE',
-    `Execution complete: ${passedJourneys}/${journeyResults.length} journeys passed in ${totalDurationMs}ms.`,
+    `Execution complete: ${passedJourneys}/${journeyResults.length} journeys passed (${passedAssertions}/${totalAssertions} assertions passed) in ${totalDurationMs}ms.`,
     failedJourneys === 0 ? 'SUCCESS' : 'WARN',
-    { passedJourneys, failedJourneys, totalDurationMs }
+    { passedJourneys, failedJourneys, totalAssertions, passedAssertions, failedAssertions, totalDurationMs }
   );
 
   return summary;

@@ -16,6 +16,11 @@ export const TestStepActionSchema = z.enum([
   'SELECT',
   'ASSERT_TEXT',
   'ASSERT_VISIBLE',
+  'ASSERT_HIDDEN',
+  'ASSERT_URL',
+  'ASSERT_COUNT',
+  'ASSERT_VALUE',
+  'ASSERT_SEMANTIC',
 ]);
 
 export const TestStepSchema = z.object({
@@ -26,6 +31,7 @@ export const TestStepSchema = z.object({
   selector: z.string().optional(),
   value: z.string().optional(),
   expectedOutcome: z.string().optional(),
+  assertions: z.array(z.any()).optional(),
   isDestructive: z.boolean().optional(),
   riskLevel: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).optional(),
 });
@@ -158,7 +164,7 @@ Return strict JSON with this exact schema:
         {
           "stepNumber": 1,
           "description": "Step description",
-          "action": "NAVIGATE | CLICK | FILL | SELECT | ASSERT_TEXT | ASSERT_VISIBLE",
+          "action": "NAVIGATE | CLICK | FILL | SELECT | ASSERT_TEXT | ASSERT_VISIBLE | ASSERT_HIDDEN | ASSERT_URL | ASSERT_COUNT | ASSERT_VALUE | ASSERT_SEMANTIC",
           "targetUrl": "string (for NAVIGATE)",
           "selector": "string (for CLICK, FILL, ASSERT)",
           "value": "string (for FILL, SELECT, or expected text)",

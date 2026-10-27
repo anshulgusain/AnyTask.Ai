@@ -1,4 +1,10 @@
 import type { TestPlan } from '../ai/journeyPlanner.js';
+export type {
+  AssertionType,
+  AssertionRule,
+  AssertionOutcome,
+  StepAssertionReport,
+} from '../ai/assertionAgent.js';
 
 export type JobStatus =
   | 'PENDING'
