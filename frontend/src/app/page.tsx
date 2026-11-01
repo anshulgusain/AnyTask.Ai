@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { fetchJobs, createJob, runJob, checkBackendHealth, JobItem, JobLogItem } from '@/lib/api';
 
 interface FieldPair {
@@ -352,7 +353,29 @@ export default function HomePage() {
                     >
                       <div className="job-card-top">
                         <span className="job-card-title">{job.title}</span>
-                        <span className={`badge-status ${statusClass}`}>{job.status}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+                          <span className={`badge-status ${statusClass}`}>{job.status}</span>
+                          {(job.status === 'COMPLETED' || job.status === 'FAILED') && (
+                            <Link
+                              href={`/report?jobId=${job.id}`}
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                fontSize: '0.7rem',
+                                fontWeight: 700,
+                                padding: '0.2rem 0.6rem',
+                                borderRadius: '999px',
+                                background: 'rgba(99,102,241,0.15)',
+                                color: '#a5b4fc',
+                                border: '1px solid rgba(99,102,241,0.3)',
+                                textDecoration: 'none',
+                                whiteSpace: 'nowrap',
+                                transition: 'all 0.15s',
+                              }}
+                            >
+                              📊 View Report
+                            </Link>
+                          )}
+                        </div>
                       </div>
                       <span className="job-card-url">🔗 {job.targetUrl}</span>
                     </div>
