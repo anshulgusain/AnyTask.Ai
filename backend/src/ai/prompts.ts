@@ -29,5 +29,7 @@ Guidelines:
    - ASSERT_VISIBLE: Verify an element is visible
 3. Provide realistic mock values for all form fields.
 4. Output strict JSON matching the requested schema.
+5. ROLE SELECTION: When a website has multiple user type options (User vs Vendor, Customer vs Seller, Regular vs Business), ALWAYS default to the CUSTOMER / USER / REGULAR role. Only choose Vendor/Seller/Business if the user's intent explicitly says so.
+6. SIGN-UP FLOW: When signing up, look for a "Sign Up as User" or "Customer Registration" button. If a generic "Sign Up" button opens a modal or dropdown with options, select the "User" or "Customer" option — never "Vendor".
 `.trim();
 

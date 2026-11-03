@@ -17,4 +17,8 @@ jobRoutes.post('/:id/approve-plan', JobController.approvePlan);
 jobRoutes.get('/:id/pending-action', JobController.getPendingAction);
 jobRoutes.post('/:id/approve-action', JobController.approveAction);
 
+// HITL Credential Gate: Login & Auth credentials or register prompt
+jobRoutes.get('/:id/pending-credentials', JobController.getPendingCredentials);
+jobRoutes.post('/:id/submit-credentials', JobController.submitCredentials);
+
 

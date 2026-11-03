@@ -388,7 +388,7 @@ function JourneyCard({ journey }: { journey: JourneyExecutionResult }) {
             >
               <thead>
                 <tr>
-                  {['#', 'Action', 'Description', 'Duration', 'Status', 'Assertions'].map((h) => (
+                  {['#', 'Action', 'Description', 'Duration', 'Status', 'Assertions', 'Screenshot'].map((h) => (
                     <th
                       key={h}
                       style={{
@@ -477,6 +477,37 @@ function JourneyCard({ journey }: { journey: JourneyExecutionResult }) {
                             {step.assertionReport.passedCount}/{step.assertionReport.total}{' '}
                             {step.assertionReport.passed ? '✓' : '✗'}
                           </span>
+                        ) : (
+                          <span style={{ color: '#334155', fontSize: '0.72rem' }}>—</span>
+                        )}
+                      </td>
+                      {/* Screenshot cell */}
+                      <td style={{ padding: '0.6rem 0.75rem', whiteSpace: 'nowrap' }}>
+                        {step.screenshotPath ? (
+                          <details>
+                            <summary
+                              style={{
+                                cursor: 'pointer',
+                                fontSize: '0.72rem',
+                                color: '#6366f1',
+                                userSelect: 'none',
+                                listStyle: 'none',
+                              }}
+                            >
+                              📸 View
+                            </summary>
+                            <img
+                              src={`http://localhost:5001/api/screenshots/${step.screenshotPath.split('/').pop()}`}
+                              alt={`Step ${step.stepNumber} screenshot`}
+                              style={{
+                                maxWidth: '320px',
+                                borderRadius: '6px',
+                                marginTop: '0.4rem',
+                                border: '1px solid rgba(99,102,241,0.3)',
+                                display: 'block',
+                              }}
+                            />
+                          </details>
                         ) : (
                           <span style={{ color: '#334155', fontSize: '0.72rem' }}>—</span>
                         )}

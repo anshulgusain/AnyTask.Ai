@@ -11,11 +11,18 @@ enum JobType {
   FORM_FILLER
   WEB_SCRAPER
   CUSTOM_AGENT
+  AUTONOMOUS_QA
 }
 
 enum JobStatus {
   PENDING
+  DISCOVERING
+  PLANNING
+  AWAITING_PLAN_APPROVAL
   RUNNING
+  AWAITING_ACTION_APPROVAL
+  AWAITING_CREDENTIALS
+  AWAITING_FIELD_INPUT
   COMPLETED
   FAILED
   CANCELLED
@@ -29,17 +36,25 @@ enum LogLevel {
 }
 
 model Job {
-  id         String     @id @default(uuid())
-  title      String
-  type       JobType    @default(FORM_FILLER)
-  status     JobStatus  @default(PENDING)
-  targetUrl  String
-  payload    Json?      // Stores target form fields, user data, instructions
-  result     Json?      // Stores agent output, submitted confirmation, screenshot urls
-  error      String?
-  createdAt  DateTime   @default(now())
-  updatedAt  DateTime   @updatedAt
-  logs       JobLog[]
+  id                 String     @id @default(uuid())
+  title              String
+  type               JobType    @default(FORM_FILLER)
+  status             JobStatus  @default(PENDING)
+  targetUrl          String
+  payload            Json?      // Stores target form fields, user data, instructions
+  plan               Json?      // Stores AI generated TestPlan
+  pendingAction      Json?      // Stores pending destructive action
+  pendingCredentials Json?      // Stores pending auth/credential request
+  pendingFieldInput  Json?      // Stores pending "ask the user for a field value" request
+  planApproved       Boolean?
+  planApprovalNotes  String?
+  actionApprovalHistory Json?
+  testIdentity       Json?      // Unique fake account generated for this run (email, password, ...)
+  result             Json?      // Stores agent output, submitted confirmation, screenshot urls
+  error              String?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+  logs               JobLog[]
 
   @@index([status])
   @@index([createdAt])

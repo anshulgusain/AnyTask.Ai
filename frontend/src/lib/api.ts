@@ -10,17 +10,63 @@ export interface JobLogItem {
   createdAt: string;
 }
 
+export interface PendingCredentialRequest {
+  loginUrl: string;
+  title?: string;
+  detectedFields: string[];
+  message: string;
+  registerUrl?: string;
+  timestamp: string;
+}
+
+export interface PendingActionApproval {
+  stepNumber: number;
+  journeyId: string;
+  action: string;
+  selector?: string;
+  value?: string;
+  description: string;
+  reason: string;
+  screenshotPath?: string;
+  timestamp: string;
+}
+
+export interface TestIdentity {
+  firstName: string;
+  lastName: string;
+  fullName: string;
+  username: string;
+  email: string;
+  password: string;
+  phone: string;
+  createdAt: string;
+}
+
 export interface JobItem {
   id: string;
   title: string;
-  type: 'FORM_FILLER' | 'WEB_SCRAPER' | 'CUSTOM_AGENT';
-  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+  type: 'FORM_FILLER' | 'WEB_SCRAPER' | 'CUSTOM_AGENT' | 'AUTONOMOUS_QA';
+  status:
+  | 'PENDING'
+  | 'DISCOVERING'
+  | 'PLANNING'
+  | 'AWAITING_PLAN_APPROVAL'
+  | 'RUNNING'
+  | 'AWAITING_ACTION_APPROVAL'
+  | 'AWAITING_CREDENTIALS'
+  | 'AWAITING_FIELD_INPUT'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'CANCELLED';
   targetUrl: string;
   payload?: {
     instructions?: string;
     fields?: Record<string, string>;
     headless?: boolean;
   };
+  pendingCredentials?: PendingCredentialRequest;
+  pendingAction?: PendingActionApproval;
+  testIdentity?: TestIdentity;
   result?: Record<string, any>;
   error?: string | null;
   createdAt: string;
@@ -82,6 +128,46 @@ export async function runJob(id: string): Promise<void> {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || 'Failed to run job');
   }
+}
+
+export async function submitJobCredentials(
+  id: string,
+  submission: {
+    action: 'PROVIDE_CREDENTIALS' | 'REGISTER_NEW' | 'SKIP';
+    username?: string;
+    password?: string;
+    notes?: string;
+  }
+): Promise<JobItem> {
+  const res = await fetch(`${API_BASE_URL}/jobs/${id}/submit-credentials`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(submission),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to submit credentials');
+  }
+  const data = await res.json();
+  return data.data;
+}
+
+export async function approveJobAction(
+  id: string,
+  approved: boolean,
+  notes?: string
+): Promise<JobItem> {
+  const res = await fetch(`${API_BASE_URL}/jobs/${id}/approve-action`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ approved, notes }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to approve action');
+  }
+  const data = await res.json();
+  return data.data;
 }
 
 export async function checkBackendHealth(): Promise<{ online: boolean; message: string }> {

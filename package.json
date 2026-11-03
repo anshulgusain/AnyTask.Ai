@@ -10,7 +10,16 @@
     "prisma:generate": "cd backend && npm run prisma:generate",
     "prisma:migrate": "cd backend && npm run prisma:migrate"
   },
-  "keywords": ["ai", "agents", "express", "nextjs", "browser-automation"],
+  "keywords": [
+    "ai",
+    "agents",
+    "express",
+    "nextjs",
+    "browser-automation"
+  ],
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "dependencies": {
+    "browse": "^0.11.3"
+  }
 }

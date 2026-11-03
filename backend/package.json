@@ -16,7 +16,8 @@
     "test:executor": "tsx src/ai/testExecutor.ts",
     "test:gate2": "tsx src/ai/testHitlGate2.ts",
     "test:assertions": "tsx src/ai/testAssertions.ts",
-    "test:guardrails": "tsx src/ai/testGuardrails.ts"
+    "test:guardrails": "tsx src/ai/testGuardrails.ts",
+    "test:warmup": "tsx src/ai/testWarmup.ts"
   },
   "keywords": [
     "ai",

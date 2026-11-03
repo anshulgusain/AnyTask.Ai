@@ -2,7 +2,16 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { fetchJobs, createJob, runJob, checkBackendHealth, JobItem, JobLogItem } from '@/lib/api';
+import {
+  fetchJobs,
+  createJob,
+  runJob,
+  checkBackendHealth,
+  submitJobCredentials,
+  approveJobAction,
+  JobItem,
+  JobLogItem,
+} from '@/lib/api';
 
 interface FieldPair {
   key: string;
@@ -10,6 +19,12 @@ interface FieldPair {
 }
 
 const PRESETS = [
+  {
+    name: 'Go-Trade (Account Sign-Up Flow)',
+    url: 'https://go-trade-web.onrender.com/',
+    instructions: 'Locate the Sign Up button, navigate to the registration form, and fill in user details to create a new account.',
+    fields: [],
+  },
   {
     name: 'Local Demo Form (Guaranteed)',
     url: 'http://localhost:3000/demo-form',
@@ -42,6 +57,43 @@ const PRESETS = [
     ],
   },
 ];
+
+function getPipelineStatus(job: JobItem) {
+  const logs = job.logs || [];
+  const latestStepLog = [...logs].reverse().find(
+    (l) => l.step === 'STEP_DISPATCH' || l.step === 'STEP_PASS' || l.step === 'STEP_FAIL'
+  );
+  const latestPhaseLog = [...logs].reverse().find(
+    (l) => l.step.startsWith('PHASE_') || l.step === 'AGENT_INIT' || l.step === 'PIPELINE_COMPLETE'
+  );
+
+  let currentPhase: 'DISCOVERY' | 'PLANNING' | 'EXECUTION' | 'COMPLETED' = 'DISCOVERY';
+  if (job.status === 'RUNNING' || job.status === 'AWAITING_CREDENTIALS' || job.status === 'AWAITING_ACTION_APPROVAL' || job.status === 'AWAITING_FIELD_INPUT') {
+    if (logs.some((l) => l.step === 'PHASE_EXECUTION' || l.step === 'STEP_DISPATCH')) {
+      currentPhase = 'EXECUTION';
+    } else if (logs.some((l) => l.step === 'PHASE_PLANNING' || l.step === 'PLANNER_START')) {
+      currentPhase = 'PLANNING';
+    } else {
+      currentPhase = 'DISCOVERY';
+    }
+  } else if (job.status === 'COMPLETED' || job.status === 'FAILED') {
+    currentPhase = 'COMPLETED';
+  }
+
+  const passedSteps = logs.filter((l) => l.step === 'STEP_PASS').length;
+  const failedSteps = logs.filter((l) => l.step === 'STEP_FAIL').length;
+  const totalStepsMatch = logs.find((l) => l.message.includes('total steps'))?.message.match(/(\d+)\s+total steps/);
+  const totalSteps = totalStepsMatch ? parseInt(totalStepsMatch[1], 10) : passedSteps + failedSteps;
+
+  return {
+    currentPhase,
+    activeAction: latestStepLog ? latestStepLog.message : latestPhaseLog ? latestPhaseLog.message : 'Waiting for agent to initialize...',
+    passedSteps,
+    failedSteps,
+    totalSteps: Math.max(totalSteps, passedSteps + failedSteps),
+    hasFailed: job.status === 'FAILED' || Boolean(job.result && job.result.failedJourneys > 0 && job.result.passedJourneys === 0),
+  };
+}
 
 export default function HomePage() {
   const [jobs, setJobs] = useState<JobItem[]>([]);
@@ -93,6 +145,45 @@ export default function HomePage() {
   }, [selectedJobId]);
 
   const selectedJob = jobs.find((j) => j.id === selectedJobId) || jobs[0];
+
+  // HITL State: Credentials & Action Approvals
+  const [authUsername, setAuthUsername] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+
+  const handleCredentialSubmit = async (action: 'PROVIDE_CREDENTIALS' | 'REGISTER_NEW' | 'SKIP') => {
+    if (!selectedJob) return;
+    setAuthSubmitting(true);
+    try {
+      await submitJobCredentials(selectedJob.id, {
+        action,
+        username: authUsername,
+        password: authPassword,
+      });
+      setAuthUsername('');
+      setAuthPassword('');
+      const updated = await fetchJobs();
+      setJobs(updated);
+    } catch (err: any) {
+      alert(`Error submitting credentials: ${err.message}`);
+    } finally {
+      setAuthSubmitting(false);
+    }
+  };
+
+  const handleActionApproval = async (approved: boolean) => {
+    if (!selectedJob) return;
+    setAuthSubmitting(true);
+    try {
+      await approveJobAction(selectedJob.id, approved);
+      const updated = await fetchJobs();
+      setJobs(updated);
+    } catch (err: any) {
+      alert(`Error processing approval: ${err.message}`);
+    } finally {
+      setAuthSubmitting(false);
+    }
+  };
 
   // Apply a preset
   const handleApplyPreset = (preset: typeof PRESETS[0]) => {
@@ -263,17 +354,24 @@ export default function HomePage() {
                 className="form-textarea"
                 value={instructions}
                 onChange={(e) => setInstructions(e.target.value)}
-                placeholder="Instructions for OpenAI Agent SDK on how to handle the page..."
+                placeholder="e.g. Go to the sign up page and sign up as a USER (not vendor). Fill the registration form with my details below."
               />
             </div>
 
             {/* Fields Builder */}
             <div className="fields-builder">
               <div className="fields-builder-header">
-                <span className="form-label" style={{ margin: 0 }}>Form Fields to Auto-Fill</span>
-                <button type="button" className="btn-add" onClick={handleAddField}>
-                  + Add Field
-                </button>
+                <div>
+                  <span className="form-label" style={{ margin: 0 }}>Form Fields to Auto-Fill</span>
+                  <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '0.2rem' }}>
+                    Optional. A <strong style={{ color: '#a5b4fc' }}>unique test account</strong> (name, email, password, phone) is generated every run; values you add here override it.
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '0.4rem' }}>
+                  <button type="button" className="btn-add" onClick={handleAddField}>
+                    + Add Field
+                  </button>
+                </div>
               </div>
 
               {fields.map((field, idx) => (
@@ -290,7 +388,7 @@ export default function HomePage() {
                     value={field.value}
                     onChange={(e) => handleFieldChange(idx, field.key, e.target.value)}
                   />
-                  {fields.length > 1 && (
+                  {fields.length > 0 && (
                     <button
                       type="button"
                       className="btn-remove"
@@ -344,7 +442,27 @@ export default function HomePage() {
               <div className="jobs-list">
                 {jobs.map((job) => {
                   const isSelected = selectedJob?.id === job.id;
-                  const statusClass = `badge-${job.status.toLowerCase()}`;
+                  const isFailed = job.status === 'FAILED' || Boolean(job.result && job.result.failedJourneys > 0 && job.result.passedJourneys === 0);
+                  const statusLabel = isFailed
+                    ? 'FAILED'
+                    : job.status === 'AWAITING_CREDENTIALS'
+                    ? '🔒 AUTH REQ'
+                    : job.status === 'AWAITING_ACTION_APPROVAL'
+                    ? '🛡️ APPROVAL REQ'
+                    : job.status === 'RUNNING'
+                    ? '⚡ RUNNING'
+                    : job.status;
+
+                  const badgeStyle = isFailed
+                    ? { background: 'rgba(239, 68, 68, 0.2)', color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.5)' }
+                    : job.status === 'AWAITING_CREDENTIALS'
+                    ? { background: 'rgba(234, 179, 8, 0.2)', color: '#facc15', border: '1px solid rgba(234, 179, 8, 0.5)' }
+                    : job.status === 'AWAITING_ACTION_APPROVAL'
+                    ? { background: 'rgba(239, 68, 68, 0.2)', color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.5)' }
+                    : job.status === 'RUNNING'
+                    ? { background: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa', border: '1px solid rgba(59, 130, 246, 0.5)' }
+                    : { background: 'rgba(16, 185, 129, 0.2)', color: '#34d399', border: '1px solid rgba(16, 185, 129, 0.5)' };
+
                   return (
                     <div
                       key={job.id}
@@ -354,8 +472,8 @@ export default function HomePage() {
                       <div className="job-card-top">
                         <span className="job-card-title">{job.title}</span>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
-                          <span className={`badge-status ${statusClass}`}>{job.status}</span>
-                          {(job.status === 'COMPLETED' || job.status === 'FAILED') && (
+                          <span className="badge-status" style={badgeStyle}>{statusLabel}</span>
+                          {(job.status === 'COMPLETED' || job.status === 'FAILED' || job.result) && (
                             <Link
                               href={`/report?jobId=${job.id}`}
                               onClick={(e) => e.stopPropagation()}
@@ -384,23 +502,363 @@ export default function HomePage() {
               </div>
 
               {/* Selected Job Execution Details & Logs */}
-              {selectedJob && (
-                <div style={{ marginTop: '1.5rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div>
-                      <h4 style={{ fontSize: '0.95rem' }}>Live Agent Telemetry</h4>
-                      <p style={{ fontSize: '0.75rem', color: 'var(--text-faint)' }}>ID: {selectedJob.id}</p>
+              {selectedJob && (() => {
+                const pipeline = getPipelineStatus(selectedJob);
+
+                return (
+                  <div style={{ marginTop: '1.5rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div>
+                        <h4 style={{ fontSize: '0.95rem' }}>Live Agent Telemetry</h4>
+                        <p style={{ fontSize: '0.75rem', color: 'var(--text-faint)' }}>ID: {selectedJob.id}</p>
+                      </div>
+                      {selectedJob.status !== 'RUNNING' && (
+                        <button
+                          className="btn-secondary"
+                          onClick={() => handleRunJob(selectedJob.id)}
+                          disabled={actionLoading}
+                        >
+                          {actionLoading ? 'Triggering...' : '▶ Re-run Agent'}
+                        </button>
+                      )}
                     </div>
-                    {selectedJob.status !== 'RUNNING' && (
-                      <button
-                        className="btn-secondary"
-                        onClick={() => handleRunJob(selectedJob.id)}
-                        disabled={actionLoading}
-                      >
-                        {actionLoading ? 'Triggering...' : '▶ Re-run Agent'}
-                      </button>
-                    )}
-                  </div>
+
+                    {/* Live Pipeline Stepper & Current Action HUD */}
+                    <div style={{
+                      margin: '1rem 0 1.25rem 0',
+                      padding: '1.25rem',
+                      borderRadius: '12px',
+                      background: '#101524',
+                      border: '1px solid rgba(255, 255, 255, 0.1)',
+                      boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
+                    }}>
+                      {/* Stepper Header */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <span style={{ fontSize: '1.2rem' }}>
+                            {selectedJob.status === 'RUNNING' ? '⚡' : selectedJob.status === 'COMPLETED' ? '✅' : pipeline.hasFailed ? '❌' : '⏳'}
+                          </span>
+                          <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 700, color: '#f8fafc' }}>
+                            Pipeline Stage:{' '}
+                            <span style={{
+                              color: selectedJob.status === 'RUNNING'
+                                ? '#60a5fa'
+                                : pipeline.hasFailed
+                                ? '#f87171'
+                                : selectedJob.status === 'COMPLETED'
+                                ? '#34d399'
+                                : '#facc15',
+                            }}>
+                              {selectedJob.status === 'RUNNING'
+                                ? `RUNNING (${pipeline.currentPhase})`
+                                : pipeline.hasFailed
+                                ? 'FAILED (GOAL NOT SATISFIED)'
+                                : selectedJob.status.replace(/_/g, ' ')}
+                            </span>
+                          </h4>
+                        </div>
+
+                        {/* Live Step Stats Pill */}
+                        <div style={{ display: 'flex', gap: '0.5rem', fontSize: '0.75rem', fontWeight: 600 }}>
+                          <span style={{ padding: '0.2rem 0.6rem', borderRadius: '6px', background: 'rgba(16, 185, 129, 0.15)', color: '#34d399', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
+                            ✓ {pipeline.passedSteps} Passed
+                          </span>
+                          {pipeline.failedSteps > 0 && (
+                            <span style={{ padding: '0.2rem 0.6rem', borderRadius: '6px', background: 'rgba(239, 68, 68, 0.15)', color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+                              ✗ {pipeline.failedSteps} Failed
+                            </span>
+                          )}
+                          <span style={{ padding: '0.2rem 0.6rem', borderRadius: '6px', background: 'rgba(255, 255, 255, 0.05)', color: '#94a3b8', border: '1px solid rgba(255, 255, 255, 0.1)' }}>
+                            Total: {pipeline.totalSteps}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Horizontal Pipeline Steps */}
+                      <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(4, 1fr)',
+                        gap: '0.5rem',
+                        marginBottom: '1rem',
+                      }}>
+                        {[
+                          { id: 'DISCOVERY', icon: '🔍', label: '1. Discovery' },
+                          { id: 'PLANNING', icon: '🗺️', label: '2. Planning' },
+                          { id: 'EXECUTION', icon: '⚡', label: '3. Execution' },
+                          { id: 'COMPLETED', icon: '📊', label: '4. Summary' },
+                        ].map((stage, idx) => {
+                          const isCurrent = pipeline.currentPhase === stage.id;
+                          const phaseOrder = ['DISCOVERY', 'PLANNING', 'EXECUTION', 'COMPLETED'];
+                          const isPast = phaseOrder.indexOf(pipeline.currentPhase) > idx;
+
+                          return (
+                            <div
+                              key={stage.id}
+                              style={{
+                                padding: '0.6rem 0.5rem',
+                                borderRadius: '8px',
+                                textAlign: 'center',
+                                background: isCurrent ? 'rgba(99, 102, 241, 0.2)' : isPast ? 'rgba(16, 185, 129, 0.1)' : 'rgba(255, 255, 255, 0.03)',
+                                border: isCurrent ? '1px solid #6366f1' : isPast ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(255, 255, 255, 0.06)',
+                                color: isCurrent ? '#c7d2fe' : isPast ? '#34d399' : '#64748b',
+                                fontSize: '0.75rem',
+                                fontWeight: isCurrent ? 700 : 500,
+                              }}
+                            >
+                              <div style={{ fontSize: '0.9rem', marginBottom: '0.2rem' }}>
+                                {isPast ? '✓' : stage.icon}
+                              </div>
+                              {stage.label}
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Current Active Action Display */}
+                      <div style={{
+                        padding: '0.75rem 1rem',
+                        borderRadius: '8px',
+                        background: '#0a0d16',
+                        border: '1px solid rgba(255, 255, 255, 0.07)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.75rem',
+                      }}>
+                        <div style={{
+                          width: '10px',
+                          height: '10px',
+                          borderRadius: '50%',
+                          background: selectedJob.status === 'RUNNING'
+                            ? '#60a5fa'
+                            : pipeline.hasFailed
+                            ? '#f87171'
+                            : selectedJob.status === 'COMPLETED'
+                            ? '#34d399'
+                            : '#facc15',
+                          flexShrink: 0,
+                          boxShadow: selectedJob.status === 'RUNNING' ? '0 0 10px #60a5fa' : 'none',
+                        }} />
+                        <div style={{ overflow: 'hidden' }}>
+                          <span style={{ fontSize: '0.7rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block' }}>
+                            Latest Agent Activity / Action
+                          </span>
+                          <span style={{ fontSize: '0.85rem', color: '#f1f5f9', fontWeight: 600, whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', display: 'block' }}>
+                            {pipeline.activeAction}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                  {selectedJob.testIdentity && (
+                    <div style={{
+                      margin: '0 0 1rem 0',
+                      padding: '0.75rem 1rem',
+                      borderRadius: '10px',
+                      background: 'rgba(99, 102, 241, 0.08)',
+                      border: '1px solid rgba(99, 102, 241, 0.3)',
+                      fontSize: '0.8rem',
+                      color: '#cbd5e1',
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: '0.35rem 1.25rem',
+                    }}>
+                      <span style={{ color: '#a5b4fc', fontWeight: 700 }}>🪪 Test account for this run</span>
+                      <span>Email: <code>{selectedJob.testIdentity.email}</code></span>
+                      <span>Password: <code>{selectedJob.testIdentity.password}</code></span>
+                      <span>Username: <code>{selectedJob.testIdentity.username}</code></span>
+                    </div>
+                  )}
+
+                  {/* HITL Credential Gate Card */}
+                  {selectedJob.status === 'AWAITING_CREDENTIALS' && (
+                    <div style={{
+                      margin: '1rem 0',
+                      padding: '1.25rem',
+                      borderRadius: '12px',
+                      background: 'linear-gradient(135deg, rgba(234, 179, 8, 0.15) 0%, rgba(202, 138, 4, 0.08) 100%)',
+                      border: '1px solid rgba(234, 179, 8, 0.5)',
+                      boxShadow: '0 8px 24px rgba(0, 0, 0, 0.3)',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                        <span style={{ fontSize: '1.35rem' }}>🔒</span>
+                        <h3 style={{ margin: 0, fontSize: '1.05rem', color: '#facc15', fontWeight: 700 }}>
+                          Website Authentication Required
+                        </h3>
+                      </div>
+                      <p style={{ fontSize: '0.85rem', color: '#cbd5e1', margin: '0 0 0.85rem 0', lineHeight: 1.4 }}>
+                        The target site prompted for login credentials at:{' '}
+                        <code style={{ color: '#93c5fd', wordBreak: 'break-all' }}>
+                          {selectedJob.pendingCredentials?.loginUrl || selectedJob.targetUrl}
+                        </code>
+                        <br />
+                        Provide your login credentials to sign in, choose to register a new account, or skip authentication.
+                      </p>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '1rem' }}>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.25rem', fontWeight: 600 }}>
+                            Username / Email
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="e.g. user@example.com"
+                            value={authUsername}
+                            onChange={(e) => setAuthUsername(e.target.value)}
+                            style={{
+                              width: '100%',
+                              padding: '0.6rem 0.75rem',
+                              borderRadius: '8px',
+                              background: '#090d16',
+                              border: '1px solid rgba(255,255,255,0.15)',
+                              color: '#fff',
+                              fontSize: '0.85rem',
+                              boxSizing: 'border-box',
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '0.25rem', fontWeight: 600 }}>
+                            Password
+                          </label>
+                          <input
+                            type="password"
+                            placeholder="••••••••"
+                            value={authPassword}
+                            onChange={(e) => setAuthPassword(e.target.value)}
+                            style={{
+                              width: '100%',
+                              padding: '0.6rem 0.75rem',
+                              borderRadius: '8px',
+                              background: '#090d16',
+                              border: '1px solid rgba(255,255,255,0.15)',
+                              color: '#fff',
+                              fontSize: '0.85rem',
+                              boxSizing: 'border-box',
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          disabled={authSubmitting || !authUsername || !authPassword}
+                          onClick={() => handleCredentialSubmit('PROVIDE_CREDENTIALS')}
+                          style={{
+                            padding: '0.6rem 1.1rem',
+                            borderRadius: '8px',
+                            background: '#eab308',
+                            color: '#000',
+                            fontWeight: 700,
+                            border: 'none',
+                            cursor: authSubmitting || !authUsername || !authPassword ? 'not-allowed' : 'pointer',
+                            opacity: authSubmitting || !authUsername || !authPassword ? 0.6 : 1,
+                            fontSize: '0.85rem',
+                          }}
+                        >
+                          🔑 Submit Credentials & Log In
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={authSubmitting}
+                          onClick={() => handleCredentialSubmit('REGISTER_NEW')}
+                          style={{
+                            padding: '0.6rem 1.1rem',
+                            borderRadius: '8px',
+                            background: 'rgba(99, 102, 241, 0.25)',
+                            color: '#c7d2fe',
+                            border: '1px solid rgba(99, 102, 241, 0.5)',
+                            fontWeight: 600,
+                            cursor: authSubmitting ? 'not-allowed' : 'pointer',
+                            fontSize: '0.85rem',
+                          }}
+                        >
+                          📝 Register New Account Instead
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={authSubmitting}
+                          onClick={() => handleCredentialSubmit('SKIP')}
+                          style={{
+                            padding: '0.6rem 0.9rem',
+                            borderRadius: '8px',
+                            background: 'rgba(255, 255, 255, 0.08)',
+                            color: '#94a3b8',
+                            border: '1px solid rgba(255, 255, 255, 0.15)',
+                            cursor: authSubmitting ? 'not-allowed' : 'pointer',
+                            fontSize: '0.85rem',
+                          }}
+                        >
+                          ⏭️ Skip Authentication
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* HITL Gate 2: Destructive Action Intercepted Card */}
+                  {selectedJob.status === 'AWAITING_ACTION_APPROVAL' && (
+                    <div style={{
+                      margin: '1rem 0',
+                      padding: '1.25rem',
+                      borderRadius: '12px',
+                      background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.15) 0%, rgba(185, 28, 28, 0.08) 100%)',
+                      border: '1px solid rgba(239, 68, 68, 0.5)',
+                      boxShadow: '0 8px 24px rgba(0, 0, 0, 0.3)',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                        <span style={{ fontSize: '1.35rem' }}>🛡️</span>
+                        <h3 style={{ margin: 0, fontSize: '1.05rem', color: '#f87171', fontWeight: 700 }}>
+                          HITL Gate 2: Destructive Action Intercepted
+                        </h3>
+                      </div>
+                      <p style={{ fontSize: '0.85rem', color: '#cbd5e1', margin: '0 0 0.85rem 0', lineHeight: 1.4 }}>
+                        The agent paused before executing an irreversible action:
+                        <br />
+                        <strong>Step {selectedJob.pendingAction?.stepNumber}:</strong> [{selectedJob.pendingAction?.action}] {selectedJob.pendingAction?.description}
+                        <br />
+                        <span style={{ color: '#fca5a5' }}>Reason: {selectedJob.pendingAction?.reason}</span>
+                      </p>
+
+                      <div style={{ display: 'flex', gap: '0.6rem' }}>
+                        <button
+                          type="button"
+                          disabled={authSubmitting}
+                          onClick={() => handleActionApproval(true)}
+                          style={{
+                            padding: '0.6rem 1.1rem',
+                            borderRadius: '8px',
+                            background: '#ef4444',
+                            color: '#fff',
+                            fontWeight: 700,
+                            border: 'none',
+                            cursor: authSubmitting ? 'not-allowed' : 'pointer',
+                            fontSize: '0.85rem',
+                          }}
+                        >
+                          ✓ Approve & Proceed
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={authSubmitting}
+                          onClick={() => handleActionApproval(false)}
+                          style={{
+                            padding: '0.6rem 1.1rem',
+                            borderRadius: '8px',
+                            background: 'rgba(255, 255, 255, 0.08)',
+                            color: '#94a3b8',
+                            border: '1px solid rgba(255, 255, 255, 0.15)',
+                            cursor: authSubmitting ? 'not-allowed' : 'pointer',
+                            fontSize: '0.85rem',
+                          }}
+                        >
+                          ✕ Reject & Skip Step
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Terminal Log Console */}
                   <div className="terminal-viewer">
@@ -458,7 +916,8 @@ export default function HomePage() {
                     </div>
                   )}
                 </div>
-              )}
+              );
+            })()}
             </>
           )}
         </div>

@@ -59,6 +59,7 @@ export type TestPlan = z.infer<typeof TestPlanSchema>;
 
 export interface PlannerOptions {
   userIntent?: string;
+  userFields?: Record<string, string>;
   model?: string;
 }
 
@@ -121,7 +122,7 @@ export async function runJourneyPlanner(
   }
 
   // Deterministic Fallback Planner (100% offline & reliable)
-  const plan = generateDeterministicPlan(siteMap, options.userIntent);
+  const plan = generateDeterministicPlan(siteMap, options.userIntent, options.userFields);
   await emitLog(
     'PLANNER_SUCCESS',
     `Constructed ${plan.journeys.length} test journeys using application topology.`,
@@ -140,13 +141,27 @@ async function generatePlanWithOpenAI(
 ): Promise<TestPlan> {
   const client = new OpenAI({ apiKey });
 
+  const userFieldsPrompt = options.userFields && Object.keys(options.userFields).length > 0
+    ? `\nUser-Specified Form Field Values (You MUST use these exact values when filling corresponding inputs):\n${JSON.stringify(options.userFields, null, 2)}`
+    : '';
+
   const prompt = `
 Analyze the following SiteMap and produce an executable TestPlan for user verification.
 User Intent / Objective: "${options.userIntent || 'Comprehensive exploratory user journey testing'}"
+${userFieldsPrompt}
 
 Base URL: ${siteMap.baseUrl}
 Discovered Routes:
 ${JSON.stringify(siteMap.pages, null, 2)}
+
+CRITICAL RULES:
+1. If the user intent mentions "sign up", "register", "create account", or "new account":
+   a. FIRST look for a "Sign Up", "Register", or "Create Account" button/link on the current page and click it.
+   b. IMPORTANT: If there are MULTIPLE sign-up options (e.g. "Sign Up as User" AND "Sign Up as Vendor/Seller/Business"), you MUST ALWAYS choose the CUSTOMER / USER / REGULAR option. NEVER choose Vendor, Seller, Business, or Merchant registration unless the intent explicitly says so.
+   c. After clicking the sign-up button, navigate to the registration page and fill the form fields.
+2. Selector Safety: Always use valid, clean CSS selectors (#id, [name='...'], [type='...']).
+   For buttons and links, PREFER text-based locators: button:has-text("Sign Up") or a:has-text("Sign Up").
+   NEVER use complex Tailwind class strings with '/' or ':' (such as .border-white/20 or .hover:bg-white) as they cause syntax errors.
 
 Return strict JSON with this exact schema:
 {
@@ -199,7 +214,8 @@ Return strict JSON with this exact schema:
  */
 export function generateDeterministicPlan(
   siteMap: SiteMap,
-  userIntent?: string
+  userIntent?: string,
+  userFields: Record<string, string> = {}
 ): TestPlan {
   const journeys: TestJourney[] = [];
   const pages = Object.values(siteMap.pages);
@@ -258,7 +274,6 @@ export function generateDeterministicPlan(
   // Step 4+: Fill all discovered form inputs
   const sampleValues: Record<string, string> = {
     name: 'Alex Rivera',
-    email: 'alex.rivera@example.com',
     card: '4242424242424242',
     date: '12/28',
     cvv: '123',
@@ -266,12 +281,19 @@ export function generateDeterministicPlan(
     zip: '94107',
     address: '100 Market St',
   };
+  for (const [key, val] of Object.entries(userFields)) {
+    sampleValues[key.toLowerCase()] = val;
+  }
+  // Longest keys first so "confirmpassword" / "username" win over "password" / "name".
+  const sampleEntries = Object.entries(sampleValues).sort((a, b) => b[0].length - a[0].length);
 
   for (const input of formPage.inputs) {
     let mockVal = 'Sample Text';
-    const lowerName = (input.name || input.id || input.label || '').toLowerCase();
+    const lowerName = (input.name || input.id || input.label || input.placeholder || input.type || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '');
 
-    for (const [key, val] of Object.entries(sampleValues)) {
+    for (const [key, val] of sampleEntries) {
       if (lowerName.includes(key)) {
         mockVal = val;
         break;

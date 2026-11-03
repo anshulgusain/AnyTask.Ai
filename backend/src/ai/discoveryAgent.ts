@@ -1,5 +1,5 @@
 import { chromium, Browser, Page } from 'playwright';
-import { inspectPageElements, PageSnapshot } from './tools.js';
+import { inspectPageElements, waitForPageSettled, PageSnapshot } from './tools.js';
 import type { LogCallback } from './browserAgent.js';
 
 export interface SiteMap {
@@ -74,9 +74,8 @@ export async function runDiscoveryAgent(
       });
 
       try {
-        await page.goto(normalizedUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
-        // Brief pause to allow hydration
-        await page.waitForTimeout(500);
+        await page.goto(normalizedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await waitForPageSettled(page);
 
         const snapshot = await inspectPageElements(page);
         pagesMap[normalizedUrl] = snapshot;

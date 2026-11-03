@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { jobRoutes } from './routes/jobRoutes.js';
+import { screenshotRouter } from './routes/screenshotRoutes.js';
 import { checkDatabaseConnection } from './db.js';
 
 dotenv.config();
@@ -30,6 +31,9 @@ app.get('/api/health', (_req, res) => {
 
 // Job API Routes
 app.use('/api/jobs', jobRoutes);
+
+// Screenshot serving (for Audit Report inline images)
+app.use('/api/screenshots', screenshotRouter);
 
 // Global Error Handler
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

@@ -16,6 +16,7 @@ import {
   evaluateStepAssertions,
   StepAssertionReport,
 } from './assertionAgent.js';
+import type { PendingCredentialRequest, CredentialSubmission, PendingFieldRequest, FieldInputSubmission } from '../types/job.js';
 
 // ---------------------------------------------------------------------------
 // Execution Result Types
@@ -80,14 +81,108 @@ export type ActionApprovalCallback = (
   page: Page
 ) => Promise<{ approved: boolean; notes?: string }>;
 
+export type CredentialApprovalCallback = (
+  req: PendingCredentialRequest,
+  page: Page
+) => Promise<CredentialSubmission>;
+
 export interface ExecutorOptions {
   headless?: boolean;
   screenshotDir?: string;
   stopOnFailure?: boolean;
   stepDelayMs?: number;
   onDestructiveAction?: ActionApprovalCallback;
+  onCredentialRequired?: CredentialApprovalCallback;
   autoApproveDestructive?: boolean;
   requireActionApproval?: boolean;
+}
+
+export interface AuthWallDetection {
+  isAuth: boolean;
+  loginUrl: string;
+  title: string;
+  usernameSelector?: string;
+  passwordSelector?: string;
+  submitSelector?: string;
+  registerUrl?: string;
+  detectedFields: string[];
+}
+
+/**
+ * Inspects the page to detect whether an authentication/login screen is present.
+ */
+export async function detectAuthWall(page: Page): Promise<AuthWallDetection> {
+  try {
+    const title = await page.title();
+    const url = page.url();
+    const evalResult = await page.evaluate(() => {
+      const pwdInput = document.querySelector('input[type="password"]') as HTMLInputElement | null;
+      const pathAndQuery = (window.location.pathname + window.location.search).toLowerCase();
+      const isLoginPath = /(login|signin|sign-in|auth|log-in|account\/login)/i.test(pathAndQuery);
+
+      if (!pwdInput && !isLoginPath) {
+        return { isAuth: false, detectedFields: [] };
+      }
+
+      const userInput = document.querySelector(
+        'input[type="email"], input[name*="user" i], input[name*="email" i], input[name*="login" i], input[id*="user" i], input[id*="email" i], input[id*="login" i], input[type="text"]'
+      ) as HTMLInputElement | null;
+
+      const submitBtn = document.querySelector(
+        'button[type="submit"], input[type="submit"], form button, [role="button"]'
+      ) as HTMLElement | null;
+
+      const regLink = Array.from(document.querySelectorAll('a[href]')).find((a) =>
+        /(register|sign\s*up|signup|create\s*account|new\s*user)/i.test(a.textContent || '') ||
+        /(register|signup|sign-up)/i.test(a.getAttribute('href') || '')
+      ) as HTMLAnchorElement | null;
+
+      const detectedFields: string[] = [];
+      if (userInput) detectedFields.push(userInput.name || userInput.id || 'email / username');
+      if (pwdInput) detectedFields.push(pwdInput.name || pwdInput.id || 'password');
+
+      const isAuth = !!pwdInput || (isLoginPath && detectedFields.length > 0);
+
+      const usernameSelector = userInput
+        ? (userInput.id ? `#${userInput.id}` : (userInput.name ? `[name="${userInput.name}"]` : 'input[type="email"], input[type="text"]'))
+        : undefined;
+
+      const passwordSelector = pwdInput
+        ? (pwdInput.id ? `#${pwdInput.id}` : (pwdInput.name ? `[name="${pwdInput.name}"]` : 'input[type="password"]'))
+        : undefined;
+
+      const submitSelector = submitBtn
+        ? (submitBtn.id ? `#${submitBtn.id}` : 'button[type="submit"]')
+        : undefined;
+
+      return {
+        isAuth,
+        usernameSelector,
+        passwordSelector,
+        submitSelector,
+        registerUrl: regLink ? regLink.href : undefined,
+        detectedFields,
+      };
+    });
+
+    return {
+      isAuth: evalResult.isAuth,
+      loginUrl: url,
+      title,
+      usernameSelector: evalResult.usernameSelector,
+      passwordSelector: evalResult.passwordSelector,
+      submitSelector: evalResult.submitSelector,
+      registerUrl: evalResult.registerUrl,
+      detectedFields: evalResult.detectedFields,
+    };
+  } catch {
+    return {
+      isAuth: false,
+      loginUrl: page.url(),
+      title: '',
+      detectedFields: [],
+    };
+  }
 }
 
 /**
@@ -320,53 +415,107 @@ export async function runExecutorAgent(
         } else {
           try {
             switch (step.action) {
-            case 'NAVIGATE': {
-              const url = step.targetUrl || plan.targetBaseUrl;
-              const res = await navigateTo(page, url);
-              actionSuccess = res.success;
-              actionMessage = res.message;
-              break;
-            }
-            case 'CLICK': {
-              if (!step.selector) throw new Error('Missing selector for CLICK action');
-              const res = await clickElement(page, step.selector);
-              actionSuccess = res.success;
-              actionMessage = res.message;
-              break;
-            }
-            case 'FILL': {
-              if (!step.selector) throw new Error('Missing selector for FILL action');
-              const val = step.value ?? '';
-              const res = await fillInput(page, step.selector, val);
-              actionSuccess = res.success;
-              actionMessage = res.message;
-              break;
-            }
-            case 'SELECT': {
-              if (!step.selector) throw new Error('Missing selector for SELECT action');
-              const val = step.value ?? '';
-              const res = await selectOption(page, step.selector, val);
-              actionSuccess = res.success;
-              actionMessage = res.message;
-              break;
-            }
-            case 'ASSERT_TEXT':
-            case 'ASSERT_VISIBLE':
-            case 'ASSERT_HIDDEN':
-            case 'ASSERT_URL':
-            case 'ASSERT_COUNT':
-            case 'ASSERT_VALUE':
-            case 'ASSERT_SEMANTIC': {
-              const report = await evaluateStepAssertions(page, step, emitLog);
-              stepAssertionReport = report;
-              actionSuccess = report.passed;
-              actionMessage =
-                report.outcomes.map((o) => o.message).join('; ') ||
-                (report.passed ? 'Assertion passed' : 'Assertion failed');
-              break;
-            }
-            default:
-              throw new Error(`Unsupported action type: ${(step as any).action}`);
+              case 'NAVIGATE': {
+                const url = step.targetUrl || plan.targetBaseUrl;
+                const res = await navigateTo(page, url);
+                actionSuccess = res.success;
+                actionMessage = res.message;
+
+                // ---------------------------------------------------------------
+                // 🔒 HITL Credential Gate: Intercept Auth/Login Pages
+                // ---------------------------------------------------------------
+                if (res.success && options.onCredentialRequired) {
+                  const authCheck = await detectAuthWall(page);
+                  if (authCheck.isAuth) {
+                    await emitLog(
+                      'HITL_AUTH_INTERCEPT',
+                      `🔒 Login screen detected at ${authCheck.loginUrl}. Waiting for user decision (Provide Credentials / Register / Skip)...`,
+                      'WARN',
+                      { loginUrl: authCheck.loginUrl, detectedFields: authCheck.detectedFields }
+                    );
+
+                    const decision = await options.onCredentialRequired(
+                      {
+                        loginUrl: authCheck.loginUrl,
+                        title: authCheck.title,
+                        detectedFields: authCheck.detectedFields,
+                        registerUrl: authCheck.registerUrl,
+                        message: `Authentication required at ${authCheck.loginUrl}. Provide credentials or choose to register.`,
+                        timestamp: new Date().toISOString(),
+                      },
+                      page
+                    );
+
+                    if (decision.action === 'PROVIDE_CREDENTIALS') {
+                      await emitLog('AUTH_INJECT', `Injecting provided credentials for "${decision.username || 'user'}"...`, 'INFO');
+                      if (decision.username && authCheck.usernameSelector) {
+                        await fillInput(page, authCheck.usernameSelector, decision.username);
+                      }
+                      if (decision.password && authCheck.passwordSelector) {
+                        await fillInput(page, authCheck.passwordSelector, decision.password);
+                      }
+                      if (authCheck.submitSelector) {
+                        await clickElement(page, authCheck.submitSelector);
+                        await page.waitForLoadState('networkidle').catch(() => { });
+                      }
+                      actionMessage = `${actionMessage} - Authenticated with provided credentials (${decision.username || 'user'})`;
+                      await emitLog('AUTH_COMPLETED', `Credentials submitted to ${authCheck.loginUrl}`, 'SUCCESS');
+                    } else if (decision.action === 'REGISTER_NEW') {
+                      if (authCheck.registerUrl) {
+                        await navigateTo(page, authCheck.registerUrl);
+                        actionMessage = `${actionMessage} - Navigated to registration page: ${authCheck.registerUrl}`;
+                        await emitLog('AUTH_REDIRECT_REGISTER', `Switched to registration flow: ${authCheck.registerUrl}`, 'INFO');
+                      } else {
+                        await emitLog('AUTH_REGISTER_WARN', 'No registration link detected on page.', 'WARN');
+                      }
+                    } else {
+                      actionMessage = `${actionMessage} - Skipped authentication by user request`;
+                      await emitLog('AUTH_SKIPPED', 'Skipped authentication.', 'INFO');
+                    }
+                  }
+                }
+                break;
+              }
+              case 'CLICK': {
+                if (!step.selector) throw new Error('Missing selector for CLICK action');
+                const res = await clickElement(page, step.selector);
+                actionSuccess = res.success;
+                actionMessage = res.message;
+                break;
+              }
+              case 'FILL': {
+                if (!step.selector) throw new Error('Missing selector for FILL action');
+                const val = step.value ?? '';
+                const res = await fillInput(page, step.selector, val);
+                actionSuccess = res.success;
+                actionMessage = res.message;
+                break;
+              }
+              case 'SELECT': {
+                if (!step.selector) throw new Error('Missing selector for SELECT action');
+                const val = step.value ?? '';
+                const res = await selectOption(page, step.selector, val);
+                actionSuccess = res.success;
+                actionMessage = res.message;
+                break;
+              }
+              case 'ASSERT_TEXT':
+              case 'ASSERT_VISIBLE':
+              case 'ASSERT_HIDDEN':
+              case 'ASSERT_URL':
+              case 'ASSERT_COUNT':
+              case 'ASSERT_VALUE':
+              case 'ASSERT_SEMANTIC': {
+                const report = await evaluateStepAssertions(page, step, emitLog);
+                stepAssertionReport = report;
+                actionSuccess = report.passed;
+                actionMessage =
+                  report.outcomes.map((o) => o.message).join('; ') ||
+                  (report.passed ? 'Assertion passed' : 'Assertion failed');
+                break;
+              }
+              default:
+                throw new Error(`Unsupported action type: ${(step as any).action}`);
             }
 
             // Post-action verification: If action step has expectedOutcome or explicit assertions

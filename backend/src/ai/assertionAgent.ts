@@ -343,7 +343,7 @@ export async function evaluateSemanticAssertion(
   const ruleId = `semantic_${crypto.randomUUID().slice(0, 8)}`;
 
   try {
-    // Extract key page text signals
+    // Extract key page text signals and active form input values
     const pageData = await page.evaluate(() => {
       const title = document.title || '';
       const h1s = Array.from(document.querySelectorAll('h1, h2, h3')).map((h) => h.textContent?.trim()).filter(Boolean);
@@ -351,7 +351,15 @@ export async function evaluateSemanticAssertion(
         .map((el) => el.textContent?.trim())
         .filter(Boolean);
       const bodyText = document.body?.innerText?.slice(0, 3000) || '';
-      return { title, headings: h1s, alerts, bodyText };
+      const inputValues = Array.from(document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input:not([type="hidden"]), textarea'))
+        .map((el) => {
+          const key = el.name || el.id || el.getAttribute('placeholder') || el.type;
+          const val = el.value || '';
+          return val ? `${key}: "${val}"` : null;
+        })
+        .filter(Boolean)
+        .slice(0, 15);
+      return { title, headings: h1s, alerts, bodyText, inputValues };
     });
 
     const apiKey = options.apiKey || process.env.OPENAI_API_KEY;
@@ -372,7 +380,7 @@ export async function evaluateSemanticAssertion(
             },
             {
               role: 'user',
-              content: `Expected Outcome: "${expectedOutcome}"\nContext Hint: "${contextHint || ''}"\nPage Title: "${pageData.title}"\nHeadings: ${JSON.stringify(pageData.headings)}\nAlerts/Badges: ${JSON.stringify(pageData.alerts)}\nVisible Page Text Snippet:\n${pageData.bodyText.slice(0, 1500)}`,
+              content: `Expected Outcome: "${expectedOutcome}"\nContext Hint: "${contextHint || ''}"\nPage Title: "${pageData.title}"\nHeadings: ${JSON.stringify(pageData.headings)}\nAlerts/Badges: ${JSON.stringify(pageData.alerts)}\nActive Input Values: ${JSON.stringify(pageData.inputValues)}\nVisible Page Text Snippet:\n${pageData.bodyText.slice(0, 1500)}`,
             },
           ],
           response_format: { type: 'json_object' },
@@ -407,7 +415,7 @@ export async function evaluateSemanticAssertion(
       .split(/\s+/)
       .filter((w) => w.length > 2 && !['and', 'the', 'for', 'with', 'has', 'been', 'appears', 'shown', 'verify'].includes(w));
 
-    const combinedPageText = `${pageData.title} ${pageData.headings.join(' ')} ${pageData.alerts.join(' ')} ${pageData.bodyText}`.toLowerCase();
+    const combinedPageText = `${pageData.title} ${pageData.headings.join(' ')} ${pageData.alerts.join(' ')} ${pageData.inputValues.join(' ')} ${pageData.bodyText}`.toLowerCase();
 
     // Check how many keywords match
     const matchedKeywords = keywords.filter((k) => combinedPageText.includes(k));
