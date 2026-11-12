@@ -165,7 +165,11 @@ async function runAutonomousAgent(
   };
 
   try {
-    browser = await chromium.launch({ headless });
+    browser = await chromium.launch({
+      headless,
+      // Docker gives /dev/shm only 64 MB, which makes Chromium tabs crash; use /tmp instead.
+      args: ['--disable-dev-shm-usage', '--disable-gpu'],
+    });
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, ignoreHTTPSErrors: true });
     if (!allowPrivateTargets()) {
       // Redirects and in-page links can still point at internal hosts after the target URL was validated.

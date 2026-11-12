@@ -17,7 +17,7 @@ const corsOrigins = process.env.CORS_ORIGIN?.split(',').map((o) => o.trim()).fil
 // Middlewares
 app.use(
   cors({
-    origin: corsOrigins && corsOrigins.length > 0 ? corsOrigins : '*',
+    origin: corsOrigins && corsOrigins.length > 0 && !corsOrigins.includes('*') ? corsOrigins : '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
   })

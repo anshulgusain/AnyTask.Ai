@@ -45,6 +45,7 @@ Useful scripts in `backend/`:
 | `npm run test:observer -- <url>` | Print exactly what the agent sees on a page |
 | `npm run test:warmup -- <url>` | Check cold-start handling and backend-API detection for a site |
 | `npm run test:guardrails` | Unit checks for loop / budget guardrails |
+| `npm run test:storage` | Upload and read back a test image through the configured screenshot storage |
 
 ## Configuration
 
@@ -56,17 +57,15 @@ All settings live in `backend/.env`; see [`backend/.env.example`](backend/.env.e
 | `ANYTASK_API_KEY` | Protects the API. The dashboard asks for it once and keeps it in the browser. |
 | `ALLOW_PRIVATE_TARGETS` | Allow localhost / private-network targets. Off by default in production (SSRF protection). |
 | `MAX_CONCURRENT_RUNS` | Browsers running at once (default 2); extra runs queue. |
-| `SCREENSHOT_STORAGE=s3` + `S3_*` | Store screenshots in S3 / R2 instead of local disk. |
+| `SCREENSHOT_STORAGE` | `local` (default), `cloudinary` (+ `CLOUDINARY_URL`) or `s3` (+ `S3_*`). Check with `npm run test:storage`. |
 | `TEST_EMAIL_BASE`, `TEST_PHONE` | Route verification emails / OTP SMS to you so sign-up flows can finish. |
 
-## Deploy on Render
+## Deploy
 
-[`render.yaml`](render.yaml) defines both services:
+- **Backend → Render** via [`render.yaml`](render.yaml): Docker ([`backend/Dockerfile`](backend/Dockerfile), based on the official Playwright image so Chromium works), runs `prisma db push` on start. The free plan (512 MB) handles one run at a time and sleeps when idle; use Standard (2 GB) and raise `MAX_CONCURRENT_RUNS` for parallel runs. Set `DATABASE_URL`, `OPENAI_API_KEY`, `ANYTASK_API_KEY` and `CORS_ORIGIN` (the frontend URL) when creating the Blueprint.
+- **Frontend → Vercel**: import the repo with root directory `frontend` and set `NEXT_PUBLIC_API_URL` to the backend URL + `/api` (it's baked in at build time, so redeploy after changing it).
 
-- **anytask-backend**: Docker ([`backend/Dockerfile`](backend/Dockerfile), based on the official Playwright image so Chromium works). Runs `prisma db push` on start. Use at least the Standard plan; Chromium doesn't fit in 512 MB next to Node.
-- **anytask-frontend**: Node; set `NEXT_PUBLIC_API_URL` to the backend URL + `/api` before the first build.
-
-Set `DATABASE_URL`, `OPENAI_API_KEY`, `ANYTASK_API_KEY`, `CORS_ORIGIN` (the frontend URL) and the `S3_*` variables in the Render dashboard. Render's disk is wiped on every deploy, so use S3/R2 for screenshots.
+Render's disk is wiped on every deploy, so screenshots only last until the next one unless you set `SCREENSHOT_STORAGE=cloudinary` with `CLOUDINARY_URL` (free, no card), or `s3` with the `S3_*` variables.
 
 ## API
 
