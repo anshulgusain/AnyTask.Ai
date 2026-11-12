@@ -26,6 +26,7 @@ const LIST_POLL_MS = 5000;
 
 export default function DashboardPage() {
   const [online, setOnline] = useState<boolean | null>(null);
+  const [canShowBrowser, setCanShowBrowser] = useState(false);
   const [needsKey, setNeedsKey] = useState(false);
   const [jobs, setJobs] = useState<JobItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -34,6 +35,7 @@ export default function DashboardPage() {
   const refreshList = useCallback(async () => {
     const health = await checkBackendHealth();
     setOnline(health.online);
+    setCanShowBrowser(health.canShowBrowser);
     if (!health.online) return;
     if (health.authRequired && !getApiKey()) {
       setNeedsKey(true);
@@ -66,7 +68,7 @@ export default function DashboardPage() {
       payload: {
         instructions: values.instructions || undefined,
         fields: values.fields,
-        ...(values.showBrowser ? { headless: false } : {}),
+        ...(values.showBrowser && canShowBrowser ? { headless: false } : {}),
       },
     });
     await runJob(job.id);
@@ -111,7 +113,7 @@ export default function DashboardPage() {
       ) : (
         <div className="workspace">
           <aside className="sidebar">
-            <RunForm disabled={online === false} onSubmit={startRun} />
+            <RunForm disabled={online === false} canShowBrowser={canShowBrowser} onSubmit={startRun} />
             {online === false && (
               <p className="hint" style={{ padding: '0 20px 14px', color: 'var(--fail)' }}>
                 Can&apos;t reach the backend. Start it with <code>cd backend &amp;&amp; npm run dev</code>.

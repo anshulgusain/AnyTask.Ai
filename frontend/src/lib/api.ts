@@ -131,14 +131,21 @@ export interface JobItem {
 
 // ─── Endpoints ───────────────────────────────────────────────────────────────
 
-export async function checkBackendHealth(): Promise<{ online: boolean; authRequired: boolean }> {
+export interface BackendHealth {
+  online: boolean;
+  authRequired: boolean;
+  /** False on servers without a display (e.g. Render), where a visible browser can't open. */
+  canShowBrowser: boolean;
+}
+
+export async function checkBackendHealth(): Promise<BackendHealth> {
   try {
     const res = await fetch(`${API_BASE_URL}/health`, { cache: 'no-store' });
-    if (!res.ok) return { online: false, authRequired: false };
+    if (!res.ok) return { online: false, authRequired: false, canShowBrowser: false };
     const body = await res.json();
-    return { online: true, authRequired: Boolean(body.authRequired) };
+    return { online: true, authRequired: Boolean(body.authRequired), canShowBrowser: Boolean(body.canShowBrowser) };
   } catch {
-    return { online: false, authRequired: false };
+    return { online: false, authRequired: false, canShowBrowser: false };
   }
 }
 

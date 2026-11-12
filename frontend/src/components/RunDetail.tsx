@@ -96,7 +96,15 @@ export default function RunDetail({ job, actions }: { job: JobItem; actions: Run
       {job.status === 'FAILED' && job.error && !report && (
         <div className="callout" style={{ borderColor: '#efc5c1', background: '#fdf6f5' }}>
           <div className="callout-title" style={{ color: 'var(--fail)' }}>The run stopped with an error</div>
-          <div className="muted mono" style={{ fontSize: 12.5 }}>{job.error}</div>
+          <div className="muted">{summarizeError(job.error)}</div>
+          {job.error.length > summarizeError(job.error).length && (
+            <details className="shot-toggle">
+              <summary>Technical details</summary>
+              <pre className="mono" style={{ fontSize: 11.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: 8, color: 'var(--ink-2)' }}>
+                {job.error}
+              </pre>
+            </details>
+          )}
         </div>
       )}
 
@@ -158,6 +166,12 @@ export default function RunDetail({ job, actions }: { job: JobItem; actions: Run
       <ActivityLog logs={job.logs ?? []} follow={active} />
     </div>
   );
+}
+
+/** First meaningful sentence of an error; Playwright appends pages of browser logs. */
+function summarizeError(error: string): string {
+  const firstLine = error.split(/\n|Browser logs:|Call log:/)[0].trim();
+  return firstLine.length > 240 ? `${firstLine.slice(0, 240)}…` : firstLine;
 }
 
 function NeedsYou({

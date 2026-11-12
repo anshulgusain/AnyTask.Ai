@@ -10,6 +10,11 @@ import { planGoals } from './goalPlanner.js';
 import { runGoal, AgentHooks, AgentSession, GoalResult } from './agentLoop.js';
 import { SiteMonitor } from './siteMonitor.js';
 
+/** A visible browser window needs a display: always on macOS/Windows, only with X/Wayland on Linux servers. */
+export function canShowBrowser(): boolean {
+  return process.platform !== 'linux' || Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+}
+
 export type LogCallback = (
   step: string,
   message: string,
@@ -35,7 +40,11 @@ export async function runBrowserAgent(
     targetUrl: job.targetUrl,
   });
 
-  const headless = job.payload?.headless ?? process.env.HEADLESS !== 'false';
+  const requestedHeadless = job.payload?.headless ?? process.env.HEADLESS !== 'false';
+  const headless = requestedHeadless || !canShowBrowser();
+  if (!requestedHeadless && headless) {
+    await log('HEADLESS_FORCED', 'This server has no display, so the browser runs hidden. Follow it in the live view instead.', 'INFO');
+  }
 
   // ---------------------------------------------------------------------------
   // Phase 0: Warm-up — wake sleeping free-tier hosts (Render, Railway, ...) before testing

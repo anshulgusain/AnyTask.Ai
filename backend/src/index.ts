@@ -7,6 +7,7 @@ import { screenshotRouter } from './routes/screenshotRoutes.js';
 import { checkDatabaseConnection } from './db.js';
 import { JobService } from './services/jobService.js';
 import { allowPrivateTargets, requireApiKey } from './security.js';
+import { canShowBrowser } from './ai/browserAgent.js';
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -30,6 +31,7 @@ app.get('/api/health', (_req, res) => {
     status: 'ok',
     service: 'anytask-ai-backend',
     authRequired: Boolean(process.env.ANYTASK_API_KEY),
+    canShowBrowser: canShowBrowser(),
     timestamp: new Date().toISOString(),
   });
 });

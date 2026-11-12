@@ -30,10 +30,12 @@ const SAMPLES = [
 
 interface Props {
   disabled: boolean;
+  /** Only a backend with a display (your own machine) can open a visible browser. */
+  canShowBrowser: boolean;
   onSubmit: (values: RunFormValues) => Promise<void>;
 }
 
-export default function RunForm({ disabled, onSubmit }: Props) {
+export default function RunForm({ disabled, canShowBrowser, onSubmit }: Props) {
   const [targetUrl, setTargetUrl] = useState('');
   const [instructions, setInstructions] = useState('');
   const [rows, setRows] = useState<{ key: string; value: string }[]>([]);
@@ -122,12 +124,14 @@ export default function RunForm({ disabled, onSubmit }: Props) {
         </button>
       </details>
 
-      <label className="checkbox-row" style={{ marginBottom: 16 }}>
-        <input type="checkbox" checked={showBrowser} onChange={(e) => setShowBrowser(e.target.checked)} />
-        <span>
-          Show the browser window <span className="faint">(local backend only)</span>
-        </span>
-      </label>
+      {canShowBrowser ? (
+        <label className="checkbox-row" style={{ marginBottom: 16 }}>
+          <input type="checkbox" checked={showBrowser} onChange={(e) => setShowBrowser(e.target.checked)} />
+          <span>Show the browser window on the server machine</span>
+        </label>
+      ) : (
+        <div style={{ marginBottom: 4 }} />
+      )}
 
       <button type="submit" className="btn btn-primary btn-block" disabled={disabled || submitting || !targetUrl.trim()}>
         {submitting ? 'Starting…' : 'Start test run'}
