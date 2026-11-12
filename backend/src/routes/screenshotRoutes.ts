@@ -1,32 +1,29 @@
 import express from 'express';
 import path from 'path';
-import fs from 'fs';
+import { screenshotStore } from '../storage.js';
 
 // ---------------------------------------------------------------------------
 // Screenshot Serving Route
-// Serves PNG screenshots captured during Playwright test execution.
-// Files are stored at: backend/test-results/screenshots/<filename>.png
+// Serves PNG screenshots captured during test runs from the configured store
+// (local disk or S3-compatible bucket, see src/storage.ts).
 // ---------------------------------------------------------------------------
 
 export const screenshotRouter = express.Router();
 
-screenshotRouter.get('/:filename', (req, res) => {
+screenshotRouter.get('/:filename', async (req, res) => {
   // Sanitize: only allow basename — no path traversal
   const filename = path.basename(req.params.filename);
 
-  // Only allow .png files
   if (!filename.endsWith('.png')) {
     return res.status(400).send('Only .png files are served');
   }
 
-  const filePath = path.resolve(process.cwd(), 'test-results', 'screenshots', filename);
-
-  if (!fs.existsSync(filePath)) {
+  const data = await screenshotStore().read(filename);
+  if (!data) {
     return res.status(404).send('Screenshot not found');
   }
 
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.sendFile(filePath);
+  res.setHeader('Content-Type', 'image/png');
+  res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+  res.send(data);
 });
-

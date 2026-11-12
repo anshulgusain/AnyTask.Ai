@@ -1,137 +1,108 @@
-# AnyTask.AI ⚡
+# AnyTask
 
-Autonomous AI agent platform built for learning and executing browser automation tasks, such as intelligent web form filling, DOM inspection, and workflow execution.
+Automated QA for web apps. Paste a URL and describe the app; an AI agent opens it in a real browser, signs up with a throwaway account, fills in forms and clicks through the main flows, then reports what works, what's broken, and what it couldn't reach.
 
----
+When it needs something only you know (an SMS code, an invite link, which account type to pick) it pauses and asks you in the dashboard.
 
-## 🏗️ Architecture Overview
-
-The repository is structured into two decoupled, full-stack TypeScript environments:
+## How it works
 
 ```text
-AnyTask.Ai/
-├── backend/                  # Node.js + Express + TypeScript + Prisma
-│   ├── prisma/
-│   │   └── schema.prisma     # PostgreSQL schema (Job & JobLog models)
-│   ├── src/
-│   │   ├── controllers/      # Express API route controllers (Zod validated)
-│   │   ├── routes/           # REST endpoints (/api/jobs, /api/health)
-│   │   ├── services/         # Job lifecycle service & Agent execution pipeline
-│   │   ├── types/            # TypeScript domain interfaces
-│   │   ├── db.ts             # Prisma client & connection manager
-│   │   └── index.ts          # Express server entry point (Port 5001)
-│   └── .env                  # Port, DATABASE_URL, and OPENAI_API_KEY
-│
-├── frontend/                 # Next.js (App Router) + TypeScript + Vanilla CSS
-│   ├── src/
-│   │   ├── app/
-│   │   │   ├── layout.tsx    # Root layout & SEO meta tags
-│   │   │   ├── page.tsx      # Interactive Job Dispatcher & Terminal UI
-│   │   │   └── globals.css   # Modern dark-mode styling & micro-animations
-│   │   └── lib/
-│   │       └── api.ts        # Client helper for backend communication
-│   └── package.json
-│
-└── package.json              # Workspace scripts to run both environments
+warm up ──▶ read home page ──▶ plan goals ──▶ for each goal: observe ─▶ decide ─▶ act ─┐
+ (wake Render                    (LLM, from                    ▲                       │
+  frontend + API)                 page + your                  └───────────────────────┘
+                                  instructions)                 until pass / fail / blocked
 ```
 
----
+- **Observe**: `pageObserver.ts` lists every visible interactive element with its real label and page region (`[10] input "IFSC Code" (in form)`). The model acts on those numbers, never on guessed CSS selectors.
+- **Decide / act**: `agentLoop.ts` gives the model one tool call per turn: `click`, `fill`, `select_option`, `navigate`, `ask_user`, `report_bug`, `finish`, …
+- **Verdicts**: every goal ends as **Pass**, **Fail** (a bug in your site), **Blocked** (captcha, OTP, a skipped question) or **Inconclusive** (the agent got stuck, not necessarily your bug).
+- **Site health**: console errors, failed requests and broken links are collected passively during the run.
+- **Safety**: a fresh fake identity per run, OTP sends to the fake phone are blocked, payments and deletes need your approval, guardrails stop loops and runaway step counts.
 
-## 🚀 Quick Start (Running Locally)
-
-### 1. Start the Express Backend
-
-In your first terminal:
+## Run locally
 
 ```bash
+# backend (http://localhost:5001)
 cd backend
+cp .env.example .env        # set OPENAI_API_KEY, optionally DATABASE_URL
 npm install
+npx playwright install chromium
+npm run db:push             # only if DATABASE_URL is set
 npm run dev
-```
 
-* Backend runs on **`http://localhost:5001`**
-* Health check: **`http://localhost:5001/api/health`**
-* Includes built-in graceful fallback mode: runs and logs in memory immediately even if your local PostgreSQL database is not yet booted.
-
-### 2. Start the Next.js Frontend
-
-In your second terminal:
-
-```bash
+# frontend (http://localhost:3000)
 cd frontend
 npm install
 npm run dev
 ```
 
-* Open **`http://localhost:3000`** in your browser.
-* Try creating a job with the preset buttons (Contact Us, Registration, Application) or input your own target browser URL and custom field values.
+Without `DATABASE_URL` the backend keeps runs in memory. Set `HEADLESS=false` in `backend/.env` (or tick "Show the browser window") to watch the agent work.
 
----
+Useful scripts in `backend/`:
 
-## 🗄️ PostgreSQL Database Configuration
-
-This project is configured with **Prisma ORM** pointing to PostgreSQL.
-
-1. Open `backend/.env` and supply your database connection string (from local Postgres, [Supabase](https://supabase.com), [Neon](https://neon.tech), or Render):
-   ```env
-   DATABASE_URL="postgresql://username:password@localhost:5432/anytask_ai?schema=public"
-   ```
-2. Generate the Prisma client and apply migrations:
-   ```bash
-   cd backend
-   npm run prisma:generate
-   npx prisma db push
-   ```
-
----
-
-## 🤖 AI Agent Pipeline
-
-The full 10-day autonomous agent pipeline is implemented in `backend/src/ai/`:
-
-| Module | Purpose |
+| Command | What it does |
 |---|---|
-| [`tools.ts`](file:///Users/anshulgusain99/Documents/Portfolio-Projects/AnyTask.Ai/backend/src/ai/tools.ts) | Atomic Playwright actions (navigate, fill, click, screenshot) |
-| [`discoveryAgent.ts`](file:///Users/anshulgusain99/Documents/Portfolio-Projects/AnyTask.Ai/backend/src/ai/discoveryAgent.ts) | Crawls target URL, builds a SiteMap of forms & actions |
-| [`journeyPlanner.ts`](file:///Users/anshulgusain99/Documents/Portfolio-Projects/AnyTask.Ai/backend/src/ai/journeyPlanner.ts) | Generates executable TestPlan via OpenAI (with deterministic fallback) |
-| [`executorAgent.ts`](file:///Users/anshulgusain99/Documents/Portfolio-Projects/AnyTask.Ai/backend/src/ai/executorAgent.ts) | Runs journeys step-by-step, screenshots at each milestone |
-| [`assertionAgent.ts`](file:///Users/anshulgusain99/Documents/Portfolio-Projects/AnyTask.Ai/backend/src/ai/assertionAgent.ts) | Evaluates DOM state: TEXT, URL, ELEMENT, INPUT, SEMANTIC assertions |
-| [`guardrails.ts`](file:///Users/anshulgusain99/Documents/Portfolio-Projects/AnyTask.Ai/backend/src/ai/guardrails.ts) | Safety engine: loop detection, step budget, error budget, rate limiting |
+| `npm run test:observer -- <url>` | Print exactly what the agent sees on a page |
+| `npm run test:warmup -- <url>` | Check cold-start handling and backend-API detection for a site |
+| `npm run test:guardrails` | Unit checks for loop / budget guardrails |
 
-HITL (Human-in-the-Loop) gates pause execution for engineer approval before proceeding with destructive actions.
+## Configuration
 
-### Run the Verification Suite
+All settings live in `backend/.env`; see [`backend/.env.example`](backend/.env.example) for the full list. The important ones:
 
-```bash
-cd backend
+| Variable | Purpose |
+|---|---|
+| `OPENAI_API_KEY` | Required. Model used is `AGENT_MODEL` (default `gpt-4.1-mini`). |
+| `ANYTASK_API_KEY` | Protects the API. The dashboard asks for it once and keeps it in the browser. |
+| `ALLOW_PRIVATE_TARGETS` | Allow localhost / private-network targets. Off by default in production (SSRF protection). |
+| `MAX_CONCURRENT_RUNS` | Browsers running at once (default 2); extra runs queue. |
+| `SCREENSHOT_STORAGE=s3` + `S3_*` | Store screenshots in S3 / R2 instead of local disk. |
+| `TEST_EMAIL_BASE`, `TEST_PHONE` | Route verification emails / OTP SMS to you so sign-up flows can finish. |
 
-npm run test:tools        # Day 2 – Playwright atomic tools
-npm run test:discovery    # Day 3 – Discovery Agent
-npm run test:planner      # Day 4 – Journey Planner
-npm run test:hitl         # Day 5 – HITL Gate 1
-npm run test:executor     # Day 6 – Executor Agent
-npm run test:gate2        # Day 7 – HITL Gate 2
-npm run test:assertions   # Day 8 – Assertion Agent
-npm run test:guardrails   # Day 9 – Guardrails Engine
-```
+## Deploy on Render
 
-### Audit Report UI
+[`render.yaml`](render.yaml) defines both services:
 
-After running a job, open the **Audit Report** at:
-```
-http://localhost:3000/report?jobId=<id>
-```
-Or click **📊 View Report** on any completed job in the main dashboard.
+- **anytask-backend**: Docker ([`backend/Dockerfile`](backend/Dockerfile), based on the official Playwright image so Chromium works). Runs `prisma db push` on start. Use at least the Standard plan; Chromium doesn't fit in 512 MB next to Node.
+- **anytask-frontend**: Node; set `NEXT_PUBLIC_API_URL` to the backend URL + `/api` before the first build.
 
----
+Set `DATABASE_URL`, `OPENAI_API_KEY`, `ANYTASK_API_KEY`, `CORS_ORIGIN` (the frontend URL) and the `S3_*` variables in the Render dashboard. Render's disk is wiped on every deploy, so use S3/R2 for screenshots.
 
-## 📡 REST API Reference
+## API
+
+All `/api/jobs` routes require the API key when `ANYTASK_API_KEY` is set (`Authorization: Bearer <key>` or `?key=<key>`).
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/health` | Service health status check |
-| `GET` | `/api/jobs` | Retrieve all jobs with logs |
-| `POST` | `/api/jobs` | Enqueue a new browser task job |
-| `GET` | `/api/jobs/:id` | Fetch details & live logs for a specific job |
-| `POST` | `/api/jobs/:id/run` | Trigger asynchronous agent execution |
-| `POST` | `/api/jobs/:id/cancel` | Cancel an ongoing job |
+| `GET` | `/api/health` | Health, and whether an API key is required |
+| `GET` | `/api/jobs` | Latest 50 runs (without logs) |
+| `POST` | `/api/jobs` | Create a run: `{ targetUrl, payload: { instructions, fields, headless } }` |
+| `GET` | `/api/jobs/:id` | One run with its full log |
+| `GET` | `/api/jobs/:id/events` | Server-Sent Events: `snapshot`, then `log` and `job` updates |
+| `POST` | `/api/jobs/:id/run` | Start (or queue) the run |
+| `POST` | `/api/jobs/:id/cancel` | Cancel a running or queued run |
+| `POST` | `/api/jobs/:id/notes` | Send the agent a note mid-run: `{ note }` |
+| `POST` | `/api/jobs/:id/submit-field-input` | Answer the agent's question: `{ value }` (empty = skip) |
+| `POST` | `/api/jobs/:id/approve-action` | Approve / reject a risky action: `{ approved }` |
+| `GET` | `/api/screenshots/:file` | Screenshot image |
+
+## Project layout
+
+```text
+backend/src/
+  ai/browserAgent.ts   run orchestration: warm-up, identity, browser, goals
+  ai/goalPlanner.ts    decides WHAT to test from the live home page
+  ai/agentLoop.ts      observe → decide → act loop for one goal, tools, safety rules
+  ai/pageObserver.ts   numbered element list the model acts on
+  ai/siteMonitor.ts    console / network / broken-link collection
+  ai/guardrails.ts     loop, step and error budgets
+  services/jobService.ts  job lifecycle, queue, pauses, SSE events
+  security.ts          API key + SSRF checks
+  storage.ts           screenshot store (local or S3)
+frontend/src/
+  app/page.tsx         dashboard: new run, run list, live run view
+  app/report/          shareable report with Markdown export
+  lib/                 API client, SSE hook, report/run-view helpers
+```
+
+`frontend/src/app/demo-form` and `demo-store` are small local apps to point the agent at while developing.

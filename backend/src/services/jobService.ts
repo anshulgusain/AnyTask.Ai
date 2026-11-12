@@ -1,12 +1,27 @@
 import { Prisma, type Job as JobRow, type JobLog as JobLogRow } from '@prisma/client';
 import { getPrismaClient, isDbConnected } from '../db.js';
-import { JobItem, JobLogItem, JobPayload, JobStatus, JobType, LogLevel, PendingCredentialRequest, CredentialSubmission, PendingFieldRequest, FieldInputSubmission, TestIdentity } from '../types/job.js';
+import { JobItem, JobLogItem, JobPayload, JobStatus, JobType, LogLevel, PendingFieldRequest, FieldInputSubmission, TestIdentity } from '../types/job.js';
 import { runBrowserAgent } from '../ai/browserAgent.js';
 import crypto from 'node:crypto';
+import { EventEmitter } from 'node:events';
+
+/**
+ * Per-job change feed for the SSE endpoint. Event name is the job id; payload is
+ * { type: 'log', log } for new log lines or { type: 'job' } when job state changed.
+ */
+export type JobEvent = { type: 'log'; log: JobLogItem } | { type: 'job' };
+export const jobEvents = new EventEmitter();
+jobEvents.setMaxListeners(200);
+const emitJob = (jobId: string, event: JobEvent) => jobEvents.emit(jobId, event);
 
 // In-memory fallback repository when PostgreSQL is not yet configured locally
 const memoryJobs = new Map<string, JobItem>();
 const memoryLogs = new Map<string, JobLogItem[]>();
+
+const MAX_CONCURRENT_RUNS = Math.max(1, Number(process.env.MAX_CONCURRENT_RUNS) || 2);
+const runQueue: string[] = [];
+const runningJobs = new Set<string>();
+const pendingNotes = new Map<string, string[]>();
 
 const ACTIVE_STATUSES: JobStatus[] = [
   'RUNNING',
@@ -40,12 +55,8 @@ function toJobItem(row: JobRow, logs: JobLogRow[] = []): JobItem {
     status: row.status as JobStatus,
     targetUrl: row.targetUrl,
     payload: (row.payload as any) ?? undefined,
-    plan: (row.plan as any) ?? undefined,
-    planApproved: row.planApproved ?? undefined,
-    planApprovalNotes: row.planApprovalNotes ?? undefined,
     pendingAction: (row.pendingAction as any) ?? undefined,
     actionApprovalHistory: (row.actionApprovalHistory as any) ?? undefined,
-    pendingCredentials: (row.pendingCredentials as any) ?? undefined,
     pendingFieldInput: (row.pendingFieldInput as any) ?? undefined,
     testIdentity: (row.testIdentity as any) ?? undefined,
     result: (row.result as any) ?? undefined,
@@ -62,13 +73,6 @@ interface ActionResolver {
   timeoutId: NodeJS.Timeout;
 }
 const pendingActionResolvers = new Map<string, ActionResolver>();
-
-interface CredentialResolver {
-  resolve: (res: CredentialSubmission) => void;
-  reject: (err: any) => void;
-  timeoutId: NodeJS.Timeout;
-}
-const pendingCredentialResolvers = new Map<string, CredentialResolver>();
 
 // ---------------------------------------------------------------------------
 // Field Input Gate resolvers
@@ -142,16 +146,13 @@ export class JobService {
     if (isDbConnected()) {
       try {
         const prisma = getPrismaClient();
+        // Logs are fetched per job (GET /jobs/:id); the list stays light for polling.
         const jobs = await prisma.job.findMany({
           orderBy: { createdAt: 'desc' },
-          include: {
-            logs: {
-              orderBy: { createdAt: 'asc' },
-            },
-          },
+          take: 50,
         });
 
-        return jobs.map((j) => toJobItem(j, j.logs));
+        return jobs.map((j) => toJobItem(j));
       } catch (err) {
         console.warn('Fallback to memory store:', err);
       }
@@ -159,10 +160,7 @@ export class JobService {
 
     const all = Array.from(memoryJobs.values());
     all.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    return all.map((j) => ({
-      ...j,
-      logs: memoryLogs.get(j.id) || [],
-    }));
+    return all.slice(0, 50).map((j) => ({ ...j, logs: [] }));
   }
 
   /**
@@ -211,16 +209,13 @@ export class JobService {
           where: { id: job.id },
           data: {
             status: job.status,
-            plan: jsonOrNull(job.plan),
-            planApproved: job.planApproved ?? null,
-            planApprovalNotes: job.planApprovalNotes ?? null,
             pendingAction: jsonOrNull(job.pendingAction),
             actionApprovalHistory: jsonOrNull(job.actionApprovalHistory),
-            pendingCredentials: jsonOrNull(job.pendingCredentials),
             pendingFieldInput: jsonOrNull(job.pendingFieldInput),
             testIdentity: jsonOrNull(job.testIdentity),
           },
         });
+        emitJob(job.id, { type: 'job' });
         return;
       } catch (err) {
         console.warn('Fallback to memory store for job save:', err);
@@ -229,6 +224,51 @@ export class JobService {
 
     const { logs: _logs, ...rest } = job;
     memoryJobs.set(job.id, rest);
+    emitJob(job.id, { type: 'job' });
+  }
+
+  /**
+   * Browsers and in-flight promises don't survive a restart, so any job still marked as
+   * running or waiting for the user can never finish: mark those as failed. Jobs that were
+   * only waiting in the queue haven't started yet, so they are queued again.
+   */
+  static async recoverInterruptedJobs(): Promise<{ failed: number; requeued: number }> {
+    if (!isDbConnected()) return { failed: 0, requeued: 0 };
+    const prisma = getPrismaClient();
+    const stuck = await prisma.job.findMany({
+      where: { status: { in: ACTIVE_STATUSES } },
+      select: { id: true },
+    });
+    for (const { id } of stuck) {
+      await this.addLog(id, 'FATAL_ERROR', 'The server restarted while this run was in progress. Start it again to retest.', 'ERROR');
+      await this.updateStatus(id, 'FAILED', undefined, 'Interrupted by a server restart');
+    }
+
+    const queued = await prisma.job.findMany({
+      where: { status: 'PENDING', logs: { some: { step: 'QUEUED' } } },
+      orderBy: { updatedAt: 'asc' },
+      select: { id: true },
+    });
+    for (const { id } of queued) {
+      await this.executeJob(id).catch((err) => console.warn(`Could not requeue ${id}:`, err.message));
+    }
+    return { failed: stuck.length, requeued: queued.length };
+  }
+
+  /** Queue a note from the developer; the agent picks it up on its next step. */
+  static async addNote(jobId: string, note: string): Promise<void> {
+    const job = await this.getJobById(jobId);
+    if (!job) throw new Error(`Job not found: ${jobId}`);
+    if (!ACTIVE_STATUSES.includes(job.status)) throw new Error('Notes can only be sent while the run is active');
+    pendingNotes.set(jobId, [...(pendingNotes.get(jobId) ?? []), note]);
+    await this.addLog(jobId, 'USER_NOTE', `Note for the agent: ${note}`, 'INFO');
+  }
+
+  /** Returns and clears notes that arrived since the last call. */
+  static takeNotes(jobId: string): string[] {
+    const notes = pendingNotes.get(jobId) ?? [];
+    pendingNotes.delete(jobId);
+    return notes;
   }
 
   /**
@@ -269,15 +309,9 @@ export class JobService {
           },
         });
 
-        return {
-          id: created.id,
-          jobId: created.jobId,
-          step: created.step,
-          message: created.message,
-          level: created.level as any,
-          metadata: created.metadata as any,
-          createdAt: created.createdAt.toISOString(),
-        };
+        const saved = toLogItem(created);
+        emitJob(jobId, { type: 'log', log: saved });
+        return saved;
       } catch (err) {
         console.warn('Fallback to memory store for logs:', err);
       }
@@ -296,6 +330,7 @@ export class JobService {
     const logs = memoryLogs.get(jobId) || [];
     logs.push(logItem);
     memoryLogs.set(jobId, logs);
+    emitJob(jobId, { type: 'log', log: logItem });
     return logItem;
   }
 
@@ -342,24 +377,20 @@ export class JobService {
       if (error) job.error = error;
       if (isTerminal) {
         job.pendingAction = undefined;
-        job.pendingCredentials = undefined;
         job.pendingFieldInput = undefined;
       }
       memoryJobs.set(id, job);
     }
+    emitJob(id, { type: 'job' });
 
     if (status === 'CANCELLED' || status === 'FAILED') {
+      const queuedAt = runQueue.indexOf(id);
+      if (queuedAt >= 0) runQueue.splice(queuedAt, 1);
       const resolver = pendingActionResolvers.get(id);
       if (resolver) {
         clearTimeout(resolver.timeoutId);
         pendingActionResolvers.delete(id);
         resolver.resolve({ approved: false, notes: `Job execution stopped: status transitioned to ${status}` });
-      }
-      const credResolver = pendingCredentialResolvers.get(id);
-      if (credResolver) {
-        clearTimeout(credResolver.timeoutId);
-        pendingCredentialResolvers.delete(id);
-        credResolver.resolve({ action: 'SKIP', notes: `Job execution stopped: status transitioned to ${status}` });
       }
       const fieldResolver = pendingFieldInputResolvers.get(id);
       if (fieldResolver) {
@@ -371,78 +402,7 @@ export class JobService {
   }
 
   /**
-   * HITL Gate 1: Save generated TestPlan and transition job to AWAITING_PLAN_APPROVAL
-   */
-  static async setPlanAwaitingApproval(
-    jobId: string,
-    plan: import('../ai/journeyPlanner.js').TestPlan
-  ): Promise<JobItem> {
-    const job = await this.getJobById(jobId);
-    if (!job) throw new Error(`Job not found: ${jobId}`);
-
-    job.plan = plan;
-    job.status = 'AWAITING_PLAN_APPROVAL';
-    await this.saveJob(job);
-
-    await this.addLog(
-      jobId,
-      'HITL_GATE_1',
-      `TestPlan generated with ${plan.journeys.length} journeys. Execution PAUSED awaiting human approval.`,
-      'WARN',
-      { planId: plan.id, summary: plan.summary }
-    );
-
-    return job;
-  }
-
-  /**
-   * Human-In-The-Loop Gate 1: Approve or Reject the TestPlan
-   */
-  static async approvePlan(
-    jobId: string,
-    approved: boolean,
-    notes?: string,
-    modifiedPlan?: import('../ai/journeyPlanner.js').TestPlan
-  ): Promise<JobItem> {
-    const job = await this.getJobById(jobId);
-    if (!job) throw new Error(`Job not found: ${jobId}`);
-
-    if (job.status !== 'AWAITING_PLAN_APPROVAL') {
-      throw new Error(`Job ${jobId} is not awaiting plan approval (current status: ${job.status})`);
-    }
-
-    job.planApproved = approved;
-    job.planApprovalNotes = notes;
-    if (modifiedPlan) {
-      job.plan = modifiedPlan;
-    }
-
-    if (approved) {
-      job.status = 'RUNNING';
-      await this.addLog(
-        jobId,
-        'HITL_PLAN_APPROVED',
-        `TestPlan approved by engineer. Proceeding to execution.${notes ? ` Notes: ${notes}` : ''}`,
-        'SUCCESS',
-        { approvedBy: 'engineer', notes }
-      );
-    } else {
-      job.status = 'CANCELLED';
-      await this.addLog(
-        jobId,
-        'HITL_PLAN_REJECTED',
-        `TestPlan rejected by engineer.${notes ? ` Reason: ${notes}` : ''}`,
-        'WARN',
-        { notes }
-      );
-    }
-
-    await this.saveJob(job);
-    return job;
-  }
-
-  /**
-   * Human-In-The-Loop Gate 2: Pause job and set awaiting action approval
+   * Approval gate: pause before a risky action (payments, deletes) until the user decides
    */
   static async setActionAwaitingApproval(
     jobId: string,
@@ -561,104 +521,8 @@ export class JobService {
     });
   }
 
-  /**
-   * HITL Credential Gate: Pause job to request credentials or registration from user
-   */
-  static async setAwaitingCredentials(
-    jobId: string,
-    request: PendingCredentialRequest
-  ): Promise<JobItem> {
-    const job = await this.getJobById(jobId);
-    if (!job) throw new Error(`Job not found: ${jobId}`);
-
-    job.status = 'AWAITING_CREDENTIALS';
-    job.pendingCredentials = request;
-    await this.addLog(
-      jobId,
-      'AUTH_REQUIRED',
-      `🔒 Login requested at ${request.loginUrl}. Provide credentials, choose to register, or skip.`,
-      'WARN',
-      { pendingCredentials: request }
-    );
-
-    await this.saveJob(job);
-    return job;
-  }
-
-  /**
-   * Submit credentials or registration directive to resume execution
-   */
-  static async submitCredentials(
-    jobId: string,
-    submission: CredentialSubmission
-  ): Promise<JobItem> {
-    const job = await this.getJobById(jobId);
-    if (!job) throw new Error(`Job not found: ${jobId}`);
-
-    if (job.status !== 'AWAITING_CREDENTIALS') {
-      throw new Error(`Job ${jobId} is not awaiting credentials (current status: ${job.status})`);
-    }
-
-    job.pendingCredentials = undefined;
-    job.status = 'RUNNING';
-    const desc = submission.action === 'PROVIDE_CREDENTIALS'
-      ? `Provided login credentials for "${submission.username || 'user'}"`
-      : submission.action === 'REGISTER_NEW'
-        ? 'Chose to register a new account'
-        : 'Skipped authentication';
-
-    await this.addLog(
-      jobId,
-      'AUTH_RESOLVED',
-      `User response: ${desc}. Resuming agent execution.`,
-      'SUCCESS',
-      { action: submission.action, username: submission.username }
-    );
-
-    await this.saveJob(job);
-
-    const resolver = pendingCredentialResolvers.get(jobId);
-    if (resolver) {
-      clearTimeout(resolver.timeoutId);
-      pendingCredentialResolvers.delete(jobId);
-      resolver.resolve(submission);
-    }
-
-    return job;
-  }
-
-  /**
-   * Get pending credential request
-   */
-  static async getPendingCredentials(jobId: string): Promise<PendingCredentialRequest | null> {
-    const job = await this.getJobById(jobId);
-    if (!job) throw new Error(`Job not found: ${jobId}`);
-    return job.pendingCredentials || null;
-  }
-
-  /**
-   * Wait for human response to credential request
-   */
-  static waitForCredentials(
-    jobId: string,
-    timeoutMs: number = 300000
-  ): Promise<CredentialSubmission> {
-    return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        pendingCredentialResolvers.delete(jobId);
-        resolve({
-          action: 'SKIP',
-          notes: 'Timed out waiting for credentials (auto-skipped).',
-        });
-      }, timeoutMs);
-
-      pendingCredentialResolvers.set(jobId, { resolve, reject, timeoutId });
-    });
-  }
-
-
   // ---------------------------------------------------------------------------
-  // HITL Field Input Gate: Pause execution to ask user for a missing field value
+  // Agent questions (ask_user): pause until the user answers or skips
   // ---------------------------------------------------------------------------
 
   /**
@@ -676,7 +540,7 @@ export class JobService {
     await this.addLog(
       jobId,
       'FIELD_INPUT_REQUIRED',
-      `⌨️ Agent needs a value for field "${request.fieldLabel}" on step ${request.stepNumber}. Waiting for user input.`,
+      `⌨️ Agent is waiting for your answer: ${request.description || request.fieldLabel}`,
       'WARN',
       { pendingFieldInput: request }
     );
@@ -705,9 +569,10 @@ export class JobService {
     await this.addLog(
       jobId,
       'FIELD_INPUT_RESOLVED',
-      `User provided value for "${fieldLabel}". Resuming agent execution.`,
-      'SUCCESS',
-      { value: submission.value }
+      submission.value.trim()
+        ? `User answered "${fieldLabel}". Resuming agent execution.`
+        : `User skipped "${fieldLabel}". Resuming agent execution.`,
+      'SUCCESS'
     );
 
     await this.saveJob(job);
@@ -760,20 +625,51 @@ export class JobService {
       throw new Error(`Job not found: ${jobId}`);
     }
 
-    if (ACTIVE_STATUSES.includes(job.status)) {
+    if (ACTIVE_STATUSES.includes(job.status) || runQueue.includes(jobId)) {
       throw new Error(`Job is already in progress (status: ${job.status})`);
     }
 
-    // Set status to RUNNING
-    await this.updateStatus(jobId, 'RUNNING');
-    await this.addLog(jobId, 'AGENT_START', 'Starting AI Browser Automation Agent pipeline', 'INFO');
+    if (runningJobs.size >= MAX_CONCURRENT_RUNS) {
+      runQueue.push(jobId);
+      await this.updateStatus(jobId, 'PENDING');
+      await this.addLog(
+        jobId,
+        'QUEUED',
+        `Waiting for a free browser (${runningJobs.size}/${MAX_CONCURRENT_RUNS} runs active, position ${runQueue.length} in queue).`,
+        'INFO'
+      );
+      return;
+    }
+
+    await this.startJob(job);
+  }
+
+  /** Every Chromium instance costs ~300MB, so only MAX_CONCURRENT_RUNS jobs run at once. */
+  private static async startJob(job: JobItem): Promise<void> {
+    runningJobs.add(job.id);
+    await this.updateStatus(job.id, 'RUNNING');
+    await this.addLog(job.id, 'AGENT_START', 'Starting AI Browser Automation Agent pipeline', 'INFO');
 
     // Run asynchronously to allow real-time progress observation
-    this.runPipeline(job).catch(async (error) => {
-      console.error(`Pipeline failure for job ${jobId}:`, error);
-      await this.addLog(jobId, 'FATAL_ERROR', `Execution stopped: ${error.message}`, 'ERROR');
-      await this.updateStatus(jobId, 'FAILED', undefined, error.message);
-    });
+    this.runPipeline(job)
+      .catch(async (error) => {
+        console.error(`Pipeline failure for job ${job.id}:`, error);
+        await this.addLog(job.id, 'FATAL_ERROR', `Execution stopped: ${error.message}`, 'ERROR');
+        await this.updateStatus(job.id, 'FAILED', undefined, error.message);
+      })
+      .finally(() => {
+        runningJobs.delete(job.id);
+        this.drainQueue().catch((err) => console.error('Queue drain failed:', err));
+      });
+  }
+
+  private static async drainQueue(): Promise<void> {
+    while (runningJobs.size < MAX_CONCURRENT_RUNS && runQueue.length > 0) {
+      const nextId = runQueue.shift()!;
+      const next = await this.getJobById(nextId);
+      if (!next || next.status !== 'PENDING') continue;
+      await this.startJob(next);
+    }
   }
 
   /**

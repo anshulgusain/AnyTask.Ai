@@ -39,6 +39,7 @@ export function generateTestIdentity(runId: string): TestIdentity {
   const lastName = pick(LAST_NAMES);
   // Satisfies the usual "upper + lower + digit + symbol, 12+ chars" password rules.
   const password = `Qa!${crypto.randomBytes(4).toString('hex')}Zx9`;
+  const realPhone = process.env.TEST_PHONE?.trim();
 
   return {
     firstName,
@@ -47,7 +48,8 @@ export function generateTestIdentity(runId: string): TestIdentity {
     username: `qa_${shortId}`,
     email: buildEmail(tag),
     password,
-    phone: `9${randomDigits(9)}`,
+    phone: realPhone || `9${randomDigits(9)}`,
+    phoneIsReal: Boolean(realPhone),
     createdAt: new Date().toISOString(),
   };
 }

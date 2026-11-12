@@ -1,17 +1,16 @@
 import { Request, Response } from 'express';
-import { JobService } from '../services/jobService.js';
+import { JobService, jobEvents, type JobEvent } from '../services/jobService.js';
 import { z } from 'zod';
+import { assertSafeTarget } from '../security.js';
 
 const CreateJobSchema = z.object({
   title: z.string().optional(),
-  type: z.enum(['FORM_FILLER', 'WEB_SCRAPER', 'CUSTOM_AGENT']).optional(),
+  type: z.enum(['FORM_FILLER', 'WEB_SCRAPER', 'CUSTOM_AGENT', 'AUTONOMOUS_QA']).optional(),
   targetUrl: z.string().url('Must provide a valid target URL'),
   payload: z
     .object({
-      targetUrl: z.string().optional(),
-      instructions: z.string().optional(),
-      fields: z.record(z.any()).optional(),
-      submitSelector: z.string().optional(),
+      instructions: z.string().max(4000).optional(),
+      fields: z.record(z.string()).optional(),
       headless: z.boolean().optional(),
     })
     .optional(),
@@ -30,6 +29,12 @@ export class JobController {
           error: 'Validation failed',
           details: parsed.error.format(),
         });
+      }
+
+      try {
+        await assertSafeTarget(parsed.data.targetUrl);
+      } catch (err: any) {
+        return res.status(400).json({ success: false, error: err.message });
       }
 
       const job = await JobService.createJob({
@@ -161,80 +166,7 @@ export class JobController {
   }
 
   /**
-   * GET /api/jobs/:id/plan (HITL Gate 1)
-   */
-  static async getPlan(req: Request, res: Response) {
-    try {
-      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-      if (!id) return res.status(400).json({ success: false, error: 'Job ID required' });
-
-      const job = await JobService.getJobById(id);
-      if (!job) return res.status(404).json({ success: false, error: `Job with ID ${id} not found` });
-
-      return res.json({
-        success: true,
-        data: {
-          jobId: id,
-          status: job.status,
-          plan: job.plan || null,
-          planApproved: job.planApproved ?? null,
-          planApprovalNotes: job.planApprovalNotes || null,
-        },
-      });
-    } catch (error: any) {
-      console.error('Error in getPlan:', error);
-      return res.status(500).json({ success: false, error: error.message || 'Failed to get plan' });
-    }
-  }
-
-  /**
-   * POST /api/jobs/:id/approve-plan (HITL Gate 1)
-   */
-  static async approvePlan(req: Request, res: Response) {
-    try {
-      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-      if (!id) return res.status(400).json({ success: false, error: 'Job ID required' });
-
-      const ApprovePlanSchema = z.object({
-        approved: z.boolean(),
-        notes: z.string().optional(),
-        modifiedPlan: z.any().optional(),
-      });
-
-      const parsed = ApprovePlanSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({
-          success: false,
-          error: 'Validation failed',
-          details: parsed.error.format(),
-        });
-      }
-
-      const updatedJob = await JobService.approvePlan(
-        id,
-        parsed.data.approved,
-        parsed.data.notes,
-        parsed.data.modifiedPlan
-      );
-
-      return res.json({
-        success: true,
-        message: parsed.data.approved
-          ? 'Plan approved. Ready for execution.'
-          : 'Plan rejected. Job cancelled.',
-        data: updatedJob,
-      });
-    } catch (error: any) {
-      console.error('Error in approvePlan:', error);
-      return res.status(400).json({
-        success: false,
-        error: error.message || 'Failed to process plan approval',
-      });
-    }
-  }
-
-  /**
-   * GET /api/jobs/:id/pending-action (HITL Gate 2)
+   * GET /api/jobs/:id/pending-action (approval gate)
    */
   static async getPendingAction(req: Request, res: Response) {
     try {
@@ -253,7 +185,7 @@ export class JobController {
   }
 
   /**
-   * POST /api/jobs/:id/approve-action (HITL Gate 2)
+   * POST /api/jobs/:id/approve-action (approval gate)
    */
   static async approveAction(req: Request, res: Response) {
     try {
@@ -297,61 +229,98 @@ export class JobController {
   }
 
   /**
-   * GET /api/jobs/:id/pending-credentials (HITL Credential Gate)
+   * GET /api/jobs/:id/events: Server-Sent Events stream.
+   * Sends `snapshot` (full job with logs) on connect, then `log` for each new log line
+   * and `job` (job without logs) whenever status / pending prompts / result change.
    */
-  static async getPendingCredentials(req: Request, res: Response) {
+  static async streamEvents(req: Request, res: Response) {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const job = id ? await JobService.getJobById(id) : null;
+    if (!id || !job) return res.status(404).json({ success: false, error: 'Job not found' });
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    const send = (event: string, data: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    send('snapshot', job);
+
+    let refreshing: Promise<void> | null = null;
+    const onEvent = (evt: JobEvent) => {
+      if (evt.type === 'log') return send('log', evt.log);
+      // Coalesce bursts of state changes into one fetch.
+      refreshing ??= JobService.getJobById(id)
+        .then((latest) => {
+          if (latest) send('job', { ...latest, logs: undefined });
+        })
+        .catch(() => {})
+        .finally(() => {
+          refreshing = null;
+        });
+    };
+
+    jobEvents.on(id, onEvent);
+    // Proxies (Render, nginx) drop idle connections; comments keep the stream open.
+    const heartbeat = setInterval(() => res.write(': ping\n\n'), 20_000);
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      jobEvents.off(id, onEvent);
+    });
+  }
+
+  /**
+   * POST /api/jobs/:id/notes: extra guidance for the agent while it runs.
+   */
+  static async addNote(req: Request, res: Response) {
     try {
       const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-      if (!id) return res.status(400).json({ success: false, error: 'Job ID required' });
-
-      const pending = await JobService.getPendingCredentials(id);
-      return res.json({
-        success: true,
-        data: pending,
-      });
+      const parsed = z.object({ note: z.string().trim().min(1).max(1000) }).safeParse(req.body);
+      if (!id || !parsed.success) {
+        return res.status(400).json({ success: false, error: 'A non-empty note (max 1000 chars) is required' });
+      }
+      await JobService.addNote(id, parsed.data.note);
+      return res.json({ success: true, message: 'Note delivered to the agent.' });
     } catch (error: any) {
-      console.error('Error in getPendingCredentials:', error);
-      return res.status(500).json({ success: false, error: error.message || 'Failed to get pending credentials' });
+      return res.status(400).json({ success: false, error: error.message || 'Failed to add note' });
     }
   }
 
   /**
-   * POST /api/jobs/:id/submit-credentials (HITL Credential Gate)
+   * GET /api/jobs/:id/pending-field-input (agent's ask_user question)
    */
-  static async submitCredentials(req: Request, res: Response) {
+  static async getPendingFieldInput(req: Request, res: Response) {
     try {
       const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
       if (!id) return res.status(400).json({ success: false, error: 'Job ID required' });
 
-      const CredentialSchema = z.object({
-        action: z.enum(['PROVIDE_CREDENTIALS', 'REGISTER_NEW', 'SKIP']),
-        username: z.string().optional(),
-        password: z.string().optional(),
-        notes: z.string().optional(),
-      });
+      const pending = await JobService.getPendingFieldInput(id);
+      return res.json({ success: true, data: pending });
+    } catch (error: any) {
+      console.error('Error in getPendingFieldInput:', error);
+      return res.status(500).json({ success: false, error: error.message || 'Failed to get pending question' });
+    }
+  }
 
-      const parsed = CredentialSchema.safeParse(req.body);
+  /**
+   * POST /api/jobs/:id/submit-field-input (answer the agent's question; empty value = skip)
+   */
+  static async submitFieldInput(req: Request, res: Response) {
+    try {
+      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      if (!id) return res.status(400).json({ success: false, error: 'Job ID required' });
+
+      const parsed = z.object({ value: z.string() }).safeParse(req.body);
       if (!parsed.success) {
-        return res.status(400).json({
-          success: false,
-          error: 'Validation failed',
-          details: parsed.error.format(),
-        });
+        return res.status(400).json({ success: false, error: 'Validation failed', details: parsed.error.format() });
       }
 
-      const updatedJob = await JobService.submitCredentials(id, parsed.data);
-
-      return res.json({
-        success: true,
-        message: 'Credentials / action submitted. Execution proceeding.',
-        data: updatedJob,
-      });
+      const updatedJob = await JobService.submitFieldInput(id, parsed.data);
+      return res.json({ success: true, message: 'Answer submitted. Execution proceeding.', data: updatedJob });
     } catch (error: any) {
-      console.error('Error in submitCredentials:', error);
-      return res.status(400).json({
-        success: false,
-        error: error.message || 'Failed to submit credentials',
-      });
+      console.error('Error in submitFieldInput:', error);
+      return res.status(400).json({ success: false, error: error.message || 'Failed to submit answer' });
     }
   }
 }
