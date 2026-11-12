@@ -1,4 +1,4 @@
-# AnyTask
+<img width="1898" height="943" alt="image" src="https://github.com/user-attachments/assets/b9e6a1fa-f305-4179-a74f-2863400e8f3d" /># AnyTask. (https://any-task-ai.vercel.app/)
 
 Automated QA for web apps. Paste a URL and describe the app; an AI agent opens it in a real browser, signs up with a throwaway account, fills in forms and clicks through the main flows, then reports what works, what's broken, and what it couldn't reach.
 
